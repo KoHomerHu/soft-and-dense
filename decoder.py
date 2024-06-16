@@ -1,0 +1,224 @@
+from typing import Dict, List
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch import nn, Tensor
+
+from lib import PointSubGraph, CrossAttention, MLP
+import utils
+
+
+class DecoderRes(nn.Module):
+    def __init__(self, hidden_size, out_features=60):
+        super(DecoderRes, self).__init__()
+        self.mlp = MLP(hidden_size, hidden_size)
+        self.fc = nn.Linear(hidden_size, out_features)
+
+    def forward(self, hidden_states):
+        hidden_states = hidden_states + self.mlp(hidden_states)
+        hidden_states = self.fc(hidden_states)
+        return hidden_states
+
+
+class DecoderResCat(nn.Module):
+    def __init__(self, hidden_size, in_features, out_features=60):
+        super(DecoderResCat, self).__init__()
+        self.mlp = MLP(in_features, hidden_size)
+        self.fc = nn.Linear(hidden_size + in_features, out_features)
+
+    def forward(self, hidden_states):
+        hidden_states = torch.cat([hidden_states, self.mlp(hidden_states)], dim=-1)
+        hidden_states = self.fc(hidden_states)
+        return hidden_states
+
+
+class Decoder(nn.Module):
+    def __init__(self, hidden_size, future_frame_num=80, mode_num=6, label_smoothing=0.0):
+        super(Decoder, self).__init__()
+        self.hidden_size = hidden_size
+        self.future_frame_num = future_frame_num
+        self.mode_num = mode_num
+
+        self.stage_one_cross_attention = CrossAttention(hidden_size)
+        self.stage_one_lanes_decoder = DecoderResCat(hidden_size, hidden_size * 3, out_features=1) # compute lane scores
+        self.stage_one_goals_2D_decoder = DecoderResCat(hidden_size, hidden_size * 4, out_features=1) # compute sparse goal scores
+        self.lane_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing) # use label-smoothing (default: 0.0)
+
+        self.goals_2D_mlp = nn.Sequential(
+            MLP(2, hidden_size),
+            MLP(hidden_size),
+            MLP(hidden_size)
+        ) # target feature extractor
+        self.goals_2D_cross_attention = CrossAttention(hidden_size)
+        self.goals_2D_point_sub_graph = PointSubGraph(hidden_size) # fuse goal feature and agent feature when encoding goals
+        self.dense_goal_loss = nn.CrossEntropyLoss()
+
+    """
+    Take inputs from VectorNet and outputs the average loss, the scores of the dense goals, the dense goal sets, and their displacement errors.
+    Parameters:
+        mapping: list of instances (dictionaries) obtained from argoverse2
+        batch_size: batch size
+        lane_states_batch: each value in list is hidden states of lanes (value shape ['lane num', hidden_size])
+        inputs: hidden states of all elements before encoding by global graph (shape [batch_size, 'element num', hidden_size])
+        inputs_lengths: valid element number of each example
+        hidden_states: hidden states of all elements after encoding by global graph (shape [batch_size, 'element num', hidden_size])
+        device: device that the model is running on
+    """
+    def forward(self, mapping: List[Dict], batch_size, lane_states_batch: List[Tensor], 
+                inputs: Tensor, inputs_lengths: List[int], hidden_states: Tensor, device):
+        # labels = utils.get_from_mapping(mapping, 'labels')
+        # labels_is_valid = utils.get_from_mapping(mapping, 'labels_is_valid')
+        loss = torch.zeros(batch_size, device=device)
+
+        dense_goal_scores_lst, dense_goals_lst = [], []
+
+        for i in range(batch_size):
+            sparse_goals = mapping[i]['goals_2D'] # sparse goals from the map
+            dense_goal_scores, dense_goals = self.goals_2D_per_example(
+                i, sparse_goals, mapping, lane_states_batch, 
+                inputs, inputs_lengths, hidden_states, 
+                device, loss
+            )
+            dense_goal_scores_lst.append(dense_goal_scores)
+            dense_goals_lst.append(dense_goals)
+
+        return loss.mean(), dense_goal_scores_lst, dense_goals_lst
+
+    """
+    Stage 1: Compute prediction of log scores of lanes and select top K lanes.
+    """
+    def get_top_k_lanes(self, i, mapping, lane_states_batch, inputs, inputs_lengths, hidden_states, device, loss):
+        # Predict log scores of lanes
+        stage_one_hidden = lane_states_batch[i]
+        stage_one_hidden_attention = self.stage_one_cross_attention(
+            stage_one_hidden.unsqueeze(0), 
+            inputs[i][:inputs_lengths[i]].unsqueeze(0)
+        ).squeeze(0)
+        stage_one_scores = self.stage_one_lanes_decoder(
+            torch.cat(
+                [
+                    hidden_states[i, 0, :].unsqueeze(0).expand(stage_one_hidden.shape), 
+                    stage_one_hidden, 
+                    stage_one_hidden_attention
+                ], 
+                dim=-1
+            )
+        )
+        stage_one_scores = stage_one_scores.squeeze(-1)
+        stage_one_scores = F.softmax(stage_one_scores, dim=-1)
+
+        # Compute lane scoring loss
+        state_one_target = torch.zeros_like(stage_one_scores)
+        state_one_target[mapping[i]['stage_one_label']] += 1.0
+
+        if self.training:
+            loss[i] += self.lane_loss(
+                stage_one_scores.unsqueeze(0), 
+                state_one_target
+            )
+
+        # Select top K lanes where K is dynamic. The sum of the probabilities of selected lanes is larger than threshold (0.95).
+        _, stage_one_topk_ids = torch.topk(stage_one_scores, k=len(stage_one_scores))
+        threshold = 0.95
+        sum = 0.0
+        for idx, item in enumerate(stage_one_scores[stage_one_topk_ids]):
+            sum += item
+            if sum > threshold:
+                stage_one_topk_ids = stage_one_topk_ids[:idx + 1]
+                break
+        topk_lanes = lane_states_batch[i][stage_one_topk_ids]
+
+        return topk_lanes
+
+    """
+    Compute prediction of scores for a set of goals (sparse/dense).
+    """
+    def get_scores(self, goals_2D_tensor: Tensor, inputs, hidden_states, inputs_lengths, i, topk_lanes):
+        # Fuse goal feature and agent feature when encoding goals.
+        goals_2D_hidden = self.goals_2D_point_sub_graph(goals_2D_tensor.unsqueeze(0), hidden_states[i, 0:1, :]).squeeze(0)
+        goals_2D_hidden_attention = self.goals_2D_cross_attention(
+            goals_2D_hidden.unsqueeze(0), 
+            inputs[i][:inputs_lengths[i]].unsqueeze(0)
+        ).squeeze(0)
+
+        # Perform cross attention from goals to top K lanes.
+        stage_one_goals_2D_hidden_attention = self.goals_2D_cross_attention(
+            goals_2D_hidden.unsqueeze(0), 
+            topk_lanes.unsqueeze(0)
+        ).squeeze(0)
+        # Concatenate features to predict goal scores
+        li = [
+            hidden_states[i, 0, :].unsqueeze(0).expand(goals_2D_hidden.shape),
+            goals_2D_hidden, 
+            goals_2D_hidden_attention, 
+            stage_one_goals_2D_hidden_attention
+        ]
+        scores = self.stage_one_goals_2D_decoder(torch.cat(li, dim=-1)).squeeze(-1)
+        scores = F.softmax(scores * 10, dim=-1)
+
+        return scores
+    
+    """
+    Stage 2: Sample dense goals from top K lanes (or sparse goals) and compute prediction of log scores of dense goals.
+    """
+    def get_dense_goal_scores(self, i, sparse_goals, mapping, device, scores, get_scores_inputs, k=150):
+        # Sample dense goals from top K sparse goals.
+        _, topk_ids = torch.topk(scores, k=min(k, len(scores)))
+        dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=3)
+        dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
+        dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
+        # include the sparse goals
+        dense_goals = torch.cat(
+            [
+                torch.tensor(dense_goals, device=device, dtype=torch.float),
+                torch.tensor(sparse_goals, device=device, dtype=torch.float)
+            ], 
+            dim=0
+        ) 
+
+        # Compute attention scores for dense goals.
+        scores = self.get_scores(dense_goals, *get_scores_inputs)
+
+        return scores, dense_goals.detach().cpu().numpy()   
+    
+    """
+    Given the dense goals and the map information, compute the APF and convert to softmax scores.
+    We compute the attraction of the ground truth goal and the reference path to each candidate.
+    """
+    def get_dense_goal_targets(self, i: int, dense_goals: np.ndarray, mapping: List[Dict], T=20.0, K1=1.0, K2=2.0):
+        ground_truth_goal = mapping[i]['labels'][-1]
+        dense_goal_targets = torch.zeros(len(dense_goals))
+        for j, goal in enumerate(dense_goals):
+            # Compute goal and reference path attraction
+            goal_dist = utils.get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
+            traj_dist = np.min(utils.get_dis_polyline2point(mapping[i]['reference_path'], goal)) # distance between the goal and the reference path
+            
+            dense_goal_targets[j] = -0.5 * K1 * goal_dist**2 - 0.5 * K2 * traj_dist**2
+
+        dense_goal_targets = F.softmax(dense_goal_targets / T, dim=-1)
+
+        return dense_goal_targets
+
+    """
+    The forward process for the i-th example in a batch.
+    """
+    def goals_2D_per_example(self, i: int, sparse_goals: np.ndarray, mapping: List[Dict], lane_states_batch: List[Tensor], 
+                             inputs: Tensor, inputs_lengths: List[int], hidden_states: Tensor, device, loss: Tensor):
+        topk_lanes = self.get_top_k_lanes(i, mapping, lane_states_batch, inputs, inputs_lengths, hidden_states, device, loss)
+
+        get_scores_inputs = (inputs, hidden_states, inputs_lengths, i, mapping, device, topk_lanes)
+        sparse_goal_scores = self.get_scores(torch.tensor(sparse_goals, device=device, dtype=torch.float), *get_scores_inputs)
+
+        # Get the dense goal set and compute the prediction of log scores of dense goals.
+        dense_goal_scores, dense_goals = self.get_dense_goal_scores(i, sparse_goals, mapping, device, sparse_goal_scores, get_scores_inputs)
+
+        # Compute loss for a training example
+        if self.training:
+            dense_goal_targets = self.get_dense_goal_targets(i, dense_goals, mapping)
+            loss[i] += self.dense_goal_loss(
+                dense_goal_scores.unsqueeze(0), 
+                torch.tensor(dense_goal_targets, device=device)
+            )
+
+        return dense_goal_scores.detach().cpu().numpy(), dense_goals

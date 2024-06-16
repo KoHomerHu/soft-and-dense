@@ -125,6 +125,8 @@ def get_dis_p2p(point, point_=(0.0, 0.0)):
 
 def get_dis_segment2point(segment, point):
     point_a, point_b = segment
+    if get_dis_p2p(point_a, point_b) < 1e-7:
+        return get_dis_p2p(point, point_a)
     if np.dot(np.array(point) - np.array(point_a), np.array(point_b) - np.array(point_a)) < 0:
         return get_dis_p2p(point, point_a)
     if np.dot(np.array(point) - np.array(point_b), np.array(point_a) - np.array(point_b)) < 0:
@@ -189,6 +191,98 @@ def get_subdivide_points(polygon, include_self=False, threshold=1.0, include_bes
     return points
 
 
+def construct_reference_path(labels, reference_path, point_label, future_frame_num):
+    # Densify the reference path
+    while len(reference_path) < 8:
+        densified_reference_path = []
+        for i in range(len(reference_path) - 1):
+            densified_reference_path.append(reference_path[i])
+            densified_reference_path.append((reference_path[i] + reference_path[i+1]) / 2) 
+        densified_reference_path.append(reference_path[-1])
+        reference_path = densified_reference_path
+
+    # shift the reference path to the target
+    reference_path = np.array(reference_path)
+    closest_point_idx = np.argmin(get_dis_batch(reference_path, point_label))
+    closest_point = reference_path[closest_point_idx]
+    reference_path = reference_path - (closest_point - point_label)
+
+    # Filter out points that are far from point label
+    # 3 <= R <= 15 is the radius of the circle centered at the target point
+    # R implicitly depends on the future trajectory's speed
+    R = max(
+        min(
+            max(
+                15, 
+                get_dis_p2p(labels[-1], labels[-future_frame_num//2])
+            ), 
+            get_dis_p2p(labels[-1], labels[0]), 
+            max(
+                get_dis_p2p(reference_path[-1], reference_path[closest_point_idx]),
+                get_dis_p2p(reference_path[0], reference_path[closest_point_idx])
+            )
+        ), 
+        3
+    )
+    filtered_reference_path = []
+    for point in reference_path:
+        if get_dis_p2p(point, point_label) <= R:
+            filtered_reference_path.append(point)
+
+    reference_path = filtered_reference_path
+
+    # Re-calculate the closest point
+    closest_point_idx = np.argmin(get_dis_batch(np.array(reference_path), point_label))
+
+    # Replace part of the reference path with the trajectory
+
+    # Find the segment of trajectory to replace segment of centerline
+    i = 0
+    while i < len(labels) and get_dis_p2p(labels[-1-i], reference_path[closest_point_idx]) <= R:
+        i += 1
+    i = max(0, i-1)
+    traj_segment = labels[-1-i:]
+    
+    traj_direction = get_unit_vector(labels[-1], labels[-future_frame_num//3]) # direction of the trajectory
+
+    start_dist = np.linalg.norm(reference_path[closest_point_idx] - reference_path[0])
+    end_dist = np.linalg.norm(reference_path[closest_point_idx] - reference_path[-1])
+
+    if not (start_dist <= 1e-7 and end_dist <= 1e-7):
+        # When the target is close to the start of the reference path
+        if start_dist <= 1e-7:
+            end_direction = get_unit_vector(reference_path[closest_point_idx], reference_path[-1])
+            # Only replace if the trajectory direction is close to the end direction
+            if np.dot(traj_direction, end_direction) > 0:
+                reference_path = traj_segment
+            else:
+                reference_path = traj_segment + reference_path[closest_point_idx:] 
+
+        # When the target is close to the end of the reference path
+        elif end_dist <= 1e-7:
+            start_direction = get_unit_vector(reference_path[closest_point_idx], reference_path[0])
+            # Only replace if the trajectory direction is close to the start direction
+            if np.dot(traj_direction, start_direction) > 0:
+                reference_path = traj_segment
+            else:
+                reference_path = reference_path[:closest_point_idx] + traj_segment[::-1]
+
+        # Other cases
+        else:
+            start_direction = get_unit_vector(reference_path[closest_point_idx], reference_path[0])
+            end_direction = get_unit_vector(reference_path[closest_point_idx], reference_path[-1])
+            # Replace iff. one of the start and end directions is close to the trajectory direction
+            start_hypo = np.dot(traj_direction, start_direction)
+            end_hypo = np.dot(traj_direction, end_direction)
+            if start_hypo * end_hypo <= 0 and not (abs(start_hypo) <= 1e-7 and abs(end_hypo) <= 1e-7):
+                if start_hypo < end_hypo: 
+                    reference_path = reference_path[:closest_point_idx] + traj_segment[::-1] # Replace the second part
+                else:
+                    reference_path = traj_segment + reference_path[closest_point_idx:] # Replace the first part
+
+    return reference_path
+
+
 def visualize_heatmap(scores, dense_goals, mapping):
     import matplotlib.pyplot as plt
 
@@ -210,8 +304,8 @@ def visualize_heatmap(scores, dense_goals, mapping):
     plt.plot(future[:, 0], future[:, 1], 'r-')
     plt.scatter(future[-1, 0], future[-1, 1], color='r', marker='*', s=50)
 
-    # reference_path = mapping['reference_path']
-    # plt.plot(reference_path[:, 0], reference_path[:, 1], 'r-', linewidth=2)
+    reference_path = mapping['reference_path']
+    plt.plot(reference_path[:, 0], reference_path[:, 1], 'b-', linewidth=2)
 
     # Make x and y axes have the same scale
     plt.axis('equal')
@@ -225,8 +319,24 @@ if __name__ == '__main__':
     from encoder_decoder import EncoderDecoder
     import numpy as np
     import matplotlib.pyplot as plt
+    import argparse
     
-    mapping = [argoverse2_get_instance('./data/train/00450480-0bcd-46b9-a48b-5337d8c9d0a3/')]
+    import traceback
+    import warnings
+    import sys
+
+    def warn_with_traceback(message, category, filename, lineno, file=None, line=None):
+        log = file if hasattr(file,'write') else sys.stderr
+        traceback.print_stack(file=log)
+        log.write(warnings.formatwarning(message, category, filename, lineno, line))
+
+    warnings.showwarning = warn_with_traceback
+
+    arg = argparse.ArgumentParser()
+    arg.add_argument('--dir', type=str, default='02b79459-8195-4715-8541-3657915e6245')
+    arg = arg.parse_args()
+    
+    mapping = [argoverse2_get_instance('./data/train/' + arg.dir + '/')]
     model = EncoderDecoder().to(0)
 
     sparse_goals = mapping[0]['goals_2D']
@@ -258,4 +368,3 @@ if __name__ == '__main__':
     target_scores = model.decoder.get_dense_goal_targets(0, dense_goals_org, mapping, 0).cpu().numpy()
     target_scores = (target_scores - target_scores.min()) / (target_scores.max() - target_scores.min())
     visualize_heatmap(target_scores, dense_goals_org, mapping[0])
-

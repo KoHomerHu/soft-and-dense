@@ -223,8 +223,8 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
 
     mapping['stage_one_label'] = stage_one_label_idx
 
-    # Generate reference path
-    reference_path = []
+    # Generate reference path (from the centerline of closest lane and future trajectory of the agent)
+    centerline = []
     left_boundary, right_boundary = ref_lane.left_lane_boundary.waypoints, ref_lane.right_lane_boundary.waypoints
 
     short_boundery = left_boundary if len(left_boundary) < len(right_boundary) else right_boundary
@@ -242,33 +242,11 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
     for i in range(len(short_polyline)):
         point = short_polyline[i]
         closest_point = long_polyline[np.argmin(utils.get_dis_batch(long_polyline, point))]
-        reference_path.append((point + closest_point) / 2)
+        centerline.append((point + closest_point) / 2)
 
-    # densify the reference path
-    while len(reference_path) < 15:
-        new_reference_path = []
-        for i in range(len(reference_path) - 1):
-            new_reference_path.append(reference_path[i])
-            new_reference_path.append((reference_path[i] + reference_path[i + 1]) / 2)
-        new_reference_path.append(reference_path[-1])
-        reference_path = new_reference_path
-
-    reference_path = np.array(reference_path) 
-
-    # shift the reference path to the target
-    closest_point = reference_path[np.argmin(utils.get_dis_batch(reference_path, point_label))]
-    reference_path = reference_path - (closest_point - point_label)
-
-    # Filter out points that are far from point label
-    R = max(10, utils.get_dis_p2p(labels[-1], labels[-future_frame_num//2]))
-    filtered_reference_path = []
-    for point in reference_path:
-        if utils.get_dis_p2p(point, point_label) <= R:
-            filtered_reference_path.append(point)
-
-    reference_path = np.array(filtered_reference_path)
+    reference_path = utils.construct_reference_path(labels, np.array(centerline), point_label, future_frame_num)
     
-    mapping['reference_path'] = reference_path
+    mapping['reference_path'] = np.array(reference_path)
 
     # Generate sparse goals
     visit = {}
@@ -308,4 +286,5 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
 
 
 class Dataset(torch.utils.data.Dataset):
-    pass
+    def __init__(self, data_dir, batch_size):
+        pass

@@ -1,7 +1,12 @@
 from pathlib import Path
 from collections import defaultdict
+import multiprocessing
+from multiprocessing import Process
+import pickle
+import zlib
 import math
 import os
+from tqdm import tqdm
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -16,7 +21,8 @@ import utils
 
 def argoverse2_load_scenario(instance_dir):
     file_path = sorted(Path(instance_dir).glob("*.parquet"))
-    assert len(file_path) == 1
+    if not len(file_path) == 1:
+        raise RuntimeError(f"Parquet file containing scenario data is missing (searched in {instance_dir})")
     file_path = file_path[0]
     return scenario_serialization.load_argoverse_scenario_parquet(file_path)
 
@@ -285,6 +291,89 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
     return mapping
 
 
+"""
+Moved out because multiprocessing uses pickle to serialize and transfer data between sub-processes.
+Yet Pickle cannot serialize local (inner) functions. 
+
+See this answer: https://stackoverflow.com/a/70422629
+"""
+def calc_ex_list(queue, queue_res):
+    while True:
+        filename = queue.get()
+
+        if filename is None:
+            break
+        
+        instance = argoverse2_get_instance(filename)
+        if instance is not None:
+            data_compress = zlib.compress(pickle.dumps(instance))
+            queue_res.put(data_compress) 
+        else:
+            queue_res.put(None)
+
+
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data_dir, batch_size):
-        pass
+    def __init__(self, data_dir="./data/train/", core_num=1, temp_file_dir="./data/temp/temp.pkl", load_from_temp=True):
+
+        if load_from_temp:
+            pickle_file = open(temp_file_dir, "rb")
+            self.ex_list = pickle.load(pickle_file)
+            pickle_file.close()
+
+        else:
+            files = []
+            for root, _, _ in os.walk(data_dir):
+                if root != data_dir:
+                    files.append(root)
+                
+            pbar = tqdm(total=len(files), desc="Loading data")
+
+            queue = multiprocessing.Queue(core_num)
+            queue_res = multiprocessing.Queue()
+
+            processes = [
+                Process(target=calc_ex_list, args=(queue, queue_res)) for _ in range(core_num)
+            ]
+            for p in processes:
+                p.start()
+            for file in files:
+                queue.put(file)
+                pbar.update(1)
+
+            while not queue.empty():
+                pass
+
+            pbar.close()
+
+            self.ex_list = []
+
+            pbar = tqdm(total=len(files), desc="Processing data")
+            for _ in range(len(files)):
+                t = queue_res.get()
+                if t is not None:
+                    self.ex_list.append(t)
+                pbar.update(1)
+
+            pbar.close()
+
+            for _ in range(core_num):
+                queue.put(None)
+            for p in processes:
+                p.join()
+
+            os.makedirs(os.path.dirname(temp_file_dir), exist_ok=True)
+            pickle_file = open(temp_file_dir, "wb")
+            pickle.dump(self.ex_list, pickle_file)
+            pickle_file.close()
+
+            print("Data dumped to ", temp_file_dir)
+
+    def __len__(self):
+        return len(self.ex_list)
+    
+    def __getitem__(self, idx):
+        data_compress = self.ex_list[idx]
+        instance = pickle.loads(zlib.decompress(data_compress))
+        return instance
+
+        

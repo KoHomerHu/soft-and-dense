@@ -34,21 +34,17 @@ class DecoderResCat(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, hidden_size, label_smoothing=0.0):
+    def __init__(self, hidden_size, label_smoothing=0.0, lane_head_num=2, lane_head_size=128, goal_head_num=4, goal_head_size=128):
         super(Decoder, self).__init__()
         self.hidden_size = hidden_size
 
-        self.stage_one_cross_attention = CrossAttention(hidden_size)
-        self.stage_one_lanes_decoder = DecoderResCat(hidden_size, hidden_size * 3, out_features=1) # compute lane scores
-        self.stage_one_goals_2D_decoder = DecoderResCat(hidden_size, hidden_size * 4, out_features=1) # compute sparse goal scores
+        self.stage_one_cross_attention = CrossAttention(hidden_size=hidden_size, attention_head_size=lane_head_size, num_attention_heads=lane_head_num)
+        self.stage_one_lanes_decoder = DecoderResCat(hidden_size, hidden_size * 2 + lane_head_num * lane_head_size, out_features=1) # compute lane scores
         self.lane_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing) # use label-smoothing (default: 0.0)
 
-        self.goals_2D_mlp = nn.Sequential(
-            MLP(2, hidden_size),
-            MLP(hidden_size),
-            MLP(hidden_size)
-        ) # target feature extractor
-        self.goals_2D_cross_attention = CrossAttention(hidden_size)
+        self.goals_2D_decoder = DecoderResCat(hidden_size, hidden_size * 2 + (goal_head_num * goal_head_size) * 2, out_features=1) # compute sparse/dense goal scores
+
+        self.goals_2D_cross_attention = CrossAttention(hidden_size=hidden_size, attention_head_size=goal_head_size, num_attention_heads=goal_head_num) 
         self.goals_2D_point_sub_graph = PointSubGraph(hidden_size) # fuse goal feature and agent feature when encoding goals
         self.dense_goal_loss = nn.CrossEntropyLoss()
 
@@ -57,7 +53,7 @@ class Decoder(nn.Module):
     Parameters:
         mapping: list of instances (dictionaries) obtained from argoverse2
         batch_size: batch size
-        lane_states_batch: each value in list is hidden states of lanes (value shape ['lane num', hidden_size])
+        lane_states_batch: each value in list is hidden states of lanes before encoding by global graph (value shape ['lane num', hidden_size])
         inputs: hidden states of all elements before encoding by global graph (shape [batch_size, 'element num', hidden_size])
         inputs_lengths: valid element number of each example
         hidden_states: hidden states of all elements after encoding by global graph (shape [batch_size, 'element num', hidden_size])
@@ -131,41 +127,45 @@ class Decoder(nn.Module):
 
     """
     Compute prediction of scores for a set of goals (sparse/dense).
+    Scores are normaized (since they come from attention).
     """
     def get_scores(self, goals_2D_tensor: Tensor, inputs, hidden_states, inputs_lengths, i, topk_lanes):
         # Fuse goal feature and agent feature when encoding goals.
         goals_2D_hidden = self.goals_2D_point_sub_graph(goals_2D_tensor.unsqueeze(0), hidden_states[i, 0:1, :]).squeeze(0)
+
+        # Perform cross attention from goals to hidden states of all elements before encoding by global graph
         goals_2D_hidden_attention = self.goals_2D_cross_attention(
             goals_2D_hidden.unsqueeze(0), 
             inputs[i][:inputs_lengths[i]].unsqueeze(0)
         ).squeeze(0)
 
-        # Perform cross attention from goals to top K lanes.
-        stage_one_goals_2D_hidden_attention = self.goals_2D_cross_attention(
+        # Perform cross attention from goals to hidden states of top K lanes before encoding by global graph.
+        goals_2D_hidden_attention_with_lane = self.goals_2D_cross_attention(
             goals_2D_hidden.unsqueeze(0), 
             topk_lanes.unsqueeze(0)
         ).squeeze(0)
+
         # Concatenate features to predict goal scores
         li = [
             hidden_states[i, 0, :].unsqueeze(0).expand(goals_2D_hidden.shape),
             goals_2D_hidden, 
             goals_2D_hidden_attention, 
-            stage_one_goals_2D_hidden_attention
+            goals_2D_hidden_attention_with_lane
         ]
-        scores = self.stage_one_goals_2D_decoder(torch.cat(li, dim=-1)).squeeze(-1)
-        scores = F.softmax(scores * 10, dim=-1)
+        scores = self.goals_2D_decoder(torch.cat(li, dim=-1)).squeeze(-1)
+        # scores = F.softmax(scores, dim=-1)
 
         return scores
     
     """
-    Stage 2: Sample dense goals from top K lanes (or sparse goals) and compute prediction of log scores of dense goals.
+    Stage 2: Sample dense goals from top K lanes (or sparse goals) and compute prediction of scores of dense goals.
     """
     def get_dense_goal_scores(self, i, sparse_goals, mapping, device, scores, get_scores_inputs, k=150):
         # Sample dense goals from top K sparse goals.
         _, topk_ids = torch.topk(scores, k=min(k, len(scores)))
         dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=3)
         dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
-        dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
+        # dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
         # include the sparse goals
         dense_goals = torch.cat(
             [
@@ -175,7 +175,7 @@ class Decoder(nn.Module):
             dim=0
         ) 
 
-        # Compute attention scores for dense goals.
+        # Compute unnormalized scores for dense goals.
         scores = self.get_scores(dense_goals, *get_scores_inputs)
 
         return scores, dense_goals.detach().cpu().numpy()   
@@ -184,9 +184,9 @@ class Decoder(nn.Module):
     Given the dense goals and the map information, compute the APF and convert to softmax scores.
     We compute the attraction of the ground truth goal and the reference path to each candidate.
     """
-    def get_dense_goal_targets(self, i: int, dense_goals: np.ndarray, mapping: List[Dict], T=20.0, K1=1.0, K2=2.0):
+    def get_dense_goal_targets(self, i: int, dense_goals: np.ndarray, mapping: List[Dict], device, T=20.0, K1=1.0, K2=2.0):
         ground_truth_goal = mapping[i]['labels'][-1]
-        dense_goal_targets = torch.zeros(len(dense_goals))
+        dense_goal_targets = torch.zeros(len(dense_goals), device=device, dtype=torch.float)
         for j, goal in enumerate(dense_goals):
             # Compute goal and reference path attraction
             goal_dist = utils.get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
@@ -203,20 +203,21 @@ class Decoder(nn.Module):
     """
     def goals_2D_per_example(self, i: int, sparse_goals: np.ndarray, mapping: List[Dict], lane_states_batch: List[Tensor], 
                              inputs: Tensor, inputs_lengths: List[int], hidden_states: Tensor, device, loss: Tensor):
+
         topk_lanes = self.get_top_k_lanes(i, mapping, lane_states_batch, inputs, inputs_lengths, hidden_states, device, loss)
 
         get_scores_inputs = (inputs, hidden_states, inputs_lengths, i, topk_lanes)
         sparse_goal_scores = self.get_scores(torch.tensor(sparse_goals, device=device, dtype=torch.float), *get_scores_inputs)
 
-        # Get the dense goal set and compute the prediction of log scores of dense goals.
+        # Get the dense goal set and compute the prediction of scores of dense goals.
         dense_goal_scores, dense_goals = self.get_dense_goal_scores(i, sparse_goals, mapping, device, sparse_goal_scores, get_scores_inputs)
 
         # Compute loss for a training example
         if self.training:
-            dense_goal_targets = self.get_dense_goal_targets(i, dense_goals, mapping)
+            dense_goal_targets = self.get_dense_goal_targets(i, dense_goals, mapping, device)
             loss[i] += self.dense_goal_loss(
                 dense_goal_scores, 
-                torch.tensor(dense_goal_targets, device=device)
+                dense_goal_targets
             )
 
-        return dense_goal_scores.detach().cpu().numpy(), dense_goals
+        return F.softmax(dense_goal_scores, dim=-1).detach().cpu().numpy(), dense_goals

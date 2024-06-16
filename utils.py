@@ -201,6 +201,8 @@ def visualize_heatmap(scores, dense_goals, mapping):
         plt.plot(polyline[:, 0], polyline[:, 1], 'k-')
 
     # Plot heat map
+    # print(dense_goals[:, 0].shape, dense_goals[:, 1].shape)
+    # print(scores.shape)
     plt.scatter(dense_goals[:, 0], dense_goals[:, 1], c=scores, cmap='rainbow', marker='o', s=5, alpha=0.3)
 
     # Plot past and future
@@ -215,11 +217,6 @@ def visualize_heatmap(scores, dense_goals, mapping):
     plt.axis('equal')
 
     plt.show()
-    
-    # reference_path = mapping['reference_path']
-    # plt.plot(reference_path[:, 0], reference_path[:, 1], 'r-', linewidth=2)
-
-    plt.show()
 
 
 # script to visualize the heatmap
@@ -229,7 +226,7 @@ if __name__ == '__main__':
     import numpy as np
     import matplotlib.pyplot as plt
     
-    mapping = [argoverse2_get_instance('./data/train/00f0977f-caf9-4781-b2b6-9747cbb7e7a3/')]
+    mapping = [argoverse2_get_instance('./data/train/00450480-0bcd-46b9-a48b-5337d8c9d0a3/')]
     model = EncoderDecoder().to(0)
 
     sparse_goals = mapping[0]['goals_2D']
@@ -243,15 +240,22 @@ if __name__ == '__main__':
     dense_goals = get_neighbour_points(sparse_goals, neighbour_dis=3)
     dense_goals = np.concatenate((dense_goals, sparse_goals), axis=0)
     dense_goals = get_points_remove_repeated(dense_goals, decimal=0)
-    dense_goals = np.array(dense_goals)
+    dense_goals_org = np.array(dense_goals)
 
-    _, scores_lst, dense_goals_lst = model(mapping, 0)
+    loss, scores_lst, dense_goals_lst = model(mapping, 0)
     scores = scores_lst[0]
     dense_goals  = dense_goals_lst[0]
     print(scores.max().item(), scores.min().item())
+    print(scores.sum())
+    print(loss.item())
     plt.plot(scores)
     plt.show()
     N_scores = (scores - scores.min()) / (scores.max() - scores.min()) # normalize scores
 
     visualize_heatmap(N_scores, dense_goals, mapping[0])
+
+    # print(dense_goals_org.shape)
+    target_scores = model.decoder.get_dense_goal_targets(0, dense_goals_org, mapping, 0).cpu().numpy()
+    target_scores = (target_scores - target_scores.min()) / (target_scores.max() - target_scores.min())
+    visualize_heatmap(target_scores, dense_goals_org, mapping[0])
 

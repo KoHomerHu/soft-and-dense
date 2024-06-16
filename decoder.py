@@ -34,11 +34,9 @@ class DecoderResCat(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, hidden_size, future_frame_num=80, mode_num=6, label_smoothing=0.0):
+    def __init__(self, hidden_size, label_smoothing=0.0):
         super(Decoder, self).__init__()
         self.hidden_size = hidden_size
-        self.future_frame_num = future_frame_num
-        self.mode_num = mode_num
 
         self.stage_one_cross_attention = CrossAttention(hidden_size)
         self.stage_one_lanes_decoder = DecoderResCat(hidden_size, hidden_size * 3, out_features=1) # compute lane scores
@@ -114,7 +112,7 @@ class Decoder(nn.Module):
 
         if self.training:
             loss[i] += self.lane_loss(
-                stage_one_scores.unsqueeze(0), 
+                stage_one_scores, 
                 state_one_target
             )
 
@@ -165,7 +163,7 @@ class Decoder(nn.Module):
     def get_dense_goal_scores(self, i, sparse_goals, mapping, device, scores, get_scores_inputs, k=150):
         # Sample dense goals from top K sparse goals.
         _, topk_ids = torch.topk(scores, k=min(k, len(scores)))
-        dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=3)
+        dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=3)
         dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
         dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
         # include the sparse goals
@@ -207,7 +205,7 @@ class Decoder(nn.Module):
                              inputs: Tensor, inputs_lengths: List[int], hidden_states: Tensor, device, loss: Tensor):
         topk_lanes = self.get_top_k_lanes(i, mapping, lane_states_batch, inputs, inputs_lengths, hidden_states, device, loss)
 
-        get_scores_inputs = (inputs, hidden_states, inputs_lengths, i, mapping, device, topk_lanes)
+        get_scores_inputs = (inputs, hidden_states, inputs_lengths, i, topk_lanes)
         sparse_goal_scores = self.get_scores(torch.tensor(sparse_goals, device=device, dtype=torch.float), *get_scores_inputs)
 
         # Get the dense goal set and compute the prediction of log scores of dense goals.
@@ -217,7 +215,7 @@ class Decoder(nn.Module):
         if self.training:
             dense_goal_targets = self.get_dense_goal_targets(i, dense_goals, mapping)
             loss[i] += self.dense_goal_loss(
-                dense_goal_scores.unsqueeze(0), 
+                dense_goal_scores, 
                 torch.tensor(dense_goal_targets, device=device)
             )
 

@@ -13,6 +13,8 @@ class NewSubGraph(nn.Module):
 
     def __init__(self, hidden_size, depth=3):
         super(NewSubGraph, self).__init__()
+        self.hidden_size = hidden_size
+
         self.layers = nn.ModuleList([MLP(hidden_size, hidden_size // 2) for _ in range(depth)])
 
         self.layer_0 = MLP(hidden_size)
@@ -25,7 +27,8 @@ class NewSubGraph(nn.Module):
     def forward(self, input_list: list):
         batch_size = len(input_list)
         device = input_list[0].device
-        hidden_states, lengths = utils.merge_tensors(input_list, device)
+        # print("input_list: ", input_list)
+        hidden_states, lengths = utils.merge_tensors(input_list, device, self.hidden_size)
         max_vector_num = hidden_states.shape[1]
 
         attention_mask = torch.zeros([batch_size, max_vector_num, max_vector_num], device=device)
@@ -51,21 +54,18 @@ Sparse Context Encoder (VectorNet: https://arxiv.org/pdf/2005.04259)
 Encoding HD maps and agent dynamics from vectorized Representation.
 """
 class VectorNet(nn.Module):
-    def __init__(self, hidden_size, enhance_global_graph=True, laneGCN=True, lane_scoring=True, attention_decay=False):
+    def __init__(self, hidden_size, laneGCN=True, lane_scoring=True):
         super(VectorNet, self).__init__()
         self.hidden_size = hidden_size
-        self.enhance_global_graph = enhance_global_graph
         self.laneGCN = laneGCN
         self.lane_scoring = lane_scoring
 
         self.point_level_sub_graph = NewSubGraph(hidden_size)
         self.point_level_cross_attention = CrossAttention(hidden_size)
 
-        self.global_graph = GlobalGraph(hidden_size, attention_decay)
-
         # Use multi-head attention and residual connection.
-        if self.enhance_global_graph:
-            self.global_graph = GlobalGraphRes(hidden_size)
+        self.global_graph = GlobalGraphRes(hidden_size)
+
         if self.laneGCN:
             self.laneGCN_A2L = CrossAttention(hidden_size)
             self.laneGCN_L2L = GlobalGraphRes(hidden_size)
@@ -94,16 +94,15 @@ class VectorNet(nn.Module):
             input_list_list.append(input_list)
             map_input_list_list.append(map_input_list)
 
-        if True:
-            element_states_batch = []
-            for i in range(batch_size):
-                a, b = self.point_level_sub_graph(input_list_list[i])
-                element_states_batch.append(a)
+        element_states_batch = []
+        for i in range(batch_size):
+            a, _ = self.point_level_sub_graph(input_list_list[i])
+            element_states_batch.append(a)
 
         if self.lane_scoring:
             lane_states_batch = []
             for i in range(batch_size):
-                a, b = self.point_level_sub_graph(map_input_list_list[i])
+                a, _ = self.point_level_sub_graph(map_input_list_list[i])
                 lane_states_batch.append(a)
 
         # We follow laneGCN to fuse realtime traffic information from agent nodes to lane nodes.
@@ -125,7 +124,7 @@ class VectorNet(nn.Module):
 
         element_states_batch, lane_states_batch = self.forward_encode_sub_graph(mapping, matrix, polyline_spans, device, batch_size)
 
-        inputs, inputs_lengths = utils.merge_tensors(element_states_batch, device=device)
+        inputs, inputs_lengths = utils.merge_tensors(element_states_batch, device=device, hidden_size=self.hidden_size)
         max_poly_num = max(inputs_lengths)
         attention_mask = torch.zeros([batch_size, max_poly_num, max_poly_num], device=device)
         for i, length in enumerate(inputs_lengths):

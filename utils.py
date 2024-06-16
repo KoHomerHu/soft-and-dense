@@ -211,7 +211,10 @@ def visualize_heatmap(scores, dense_goals, mapping):
     # reference_path = mapping['reference_path']
     # plt.plot(reference_path[:, 0], reference_path[:, 1], 'r-', linewidth=2)
 
-    plt.gca().set_aspect('equal', adjustable='box')
+    # Make x and y axes have the same scale
+    plt.axis('equal')
+
+    plt.show()
     
     # reference_path = mapping['reference_path']
     # plt.plot(reference_path[:, 0], reference_path[:, 1], 'r-', linewidth=2)
@@ -222,12 +225,12 @@ def visualize_heatmap(scores, dense_goals, mapping):
 # script to visualize the heatmap
 if __name__ == '__main__':
     from dataset import argoverse2_get_instance
-    from decoder import Decoder
+    from encoder_decoder import EncoderDecoder
     import numpy as np
     import matplotlib.pyplot as plt
     
-    mapping = [argoverse2_get_instance('./data/train/0236e0f6-fa31-45ec-82b2-c1abcdc486fc/')]
-    model = Decoder(hidden_size=128)
+    mapping = [argoverse2_get_instance('./data/train/00f0977f-caf9-4781-b2b6-9747cbb7e7a3/')]
+    model = EncoderDecoder().to(0)
 
     sparse_goals = mapping[0]['goals_2D']
     gt_target = mapping[0]['labels'][-1]
@@ -242,7 +245,9 @@ if __name__ == '__main__':
     dense_goals = get_points_remove_repeated(dense_goals, decimal=0)
     dense_goals = np.array(dense_goals)
 
-    scores = model.get_dense_goal_targets(0, dense_goals, mapping)
+    _, scores_lst, dense_goals_lst = model(mapping, 0)
+    scores = scores_lst[0]
+    dense_goals  = dense_goals_lst[0]
     print(scores.max().item(), scores.min().item())
     plt.plot(scores)
     plt.show()

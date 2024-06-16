@@ -18,10 +18,10 @@ Outputs:
     - dense_goals_lst: dense goal sets
 """
 class EncoderDecoder(nn.Module):
-    def __init__(self, hidden_size=128, future_frame_num=80, mode_num=6, enhance_global_graph=True, laneGCN=True, lane_scoring=True, attention_decay=False):
+    def __init__(self, hidden_size=128, laneGCN=True, lane_scoring=True):
         super(EncoderDecoder, self).__init__()
-        self.encoder = VectorNet(hidden_size, enhance_global_graph, laneGCN, lane_scoring, attention_decay)
-        self.decoder = Decoder(hidden_size, future_frame_num, mode_num)
+        self.encoder = VectorNet(hidden_size, laneGCN, lane_scoring)
+        self.decoder = Decoder(hidden_size)
 
     def forward(self, mapping: List[Dict], device):
         mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device = self.encoder(mapping, device)

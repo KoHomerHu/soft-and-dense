@@ -87,7 +87,7 @@ class Decoder(nn.Module):
         if self.training:
             for i in range(batch_size):
                 loss[i] += self.dense_goal_loss(
-                    dense_goal_scores_lst[i], 
+                    F.softmax(dense_goal_scores_lst[i], dim=-1), 
                     F.softmax(dense_goal_targets_lst[i].to(device), dim=-1)
                 )
 

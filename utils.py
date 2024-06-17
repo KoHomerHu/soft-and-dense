@@ -195,7 +195,7 @@ def get_subdivide_points(polygon, include_self=False, threshold=1.0, include_bes
 
 def construct_reference_path(labels, reference_path, point_label, future_frame_num):
     # Densify the reference path
-    while len(reference_path) < 15:
+    while len(reference_path) < 9:
         densified_reference_path = []
         for i in range(len(reference_path) - 1):
             densified_reference_path.append(reference_path[i])
@@ -313,23 +313,31 @@ class RandomSampler(torch.utils.data.Sampler):
 Given the dense goals and the map information, compute the APF and convert to softmax scores.
 We compute the attraction of the ground truth goal and the reference path to each candidate.
 """
-def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=10.0, K1=1.0, K2=2.0):
+def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=20.0, K1=1.0, K2=2.0):
     ground_truth_goal = mapping['labels'][-1]
     dense_goal_targets = torch.zeros(len(dense_goals), dtype=torch.float)
 
     if len(mapping['reference_path']) < 2:
+        K1 = 6.0
         K2 = 0.0
 
     for i, goal in enumerate(dense_goals):
-        # Compute goal and reference path attraction
         goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
-        traj_dist = np.min(get_dis_polyline2point(mapping['reference_path'], goal)) # distance between the goal and the reference path
-        
-        dense_goal_targets[i] = -0.5 * K1 * goal_dist**2 - 0.5 * K2 * traj_dist**2
-
-    dense_goal_targets = F.softmax(dense_goal_targets / T, dim=-1)
+        if get_dis_p2p(goal, ground_truth_goal) <= 15:
+            # Compute goal and reference path attraction
+            traj_dist = np.min(get_dis_polyline2point(mapping['reference_path'], goal)) # distance between the goal and the reference path
+            dense_goal_targets[i] = max(-0.5 * K1 * goal_dist**2 - 0.5 * K2 * traj_dist**2, -1e9) / T
+        else:
+            dense_goal_targets[i] = -1e9 / T
 
     return dense_goal_targets
+
+
+def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict]):
+    dense_goal_targets_one_hot = torch.zeros(len(dense_goals), dtype=torch.float)
+    dense_goal_targets_one_hot[np.argmin(get_dis_batch(dense_goals, mapping['labels'][-1]))] = 1.0
+
+    return dense_goal_targets_one_hot
 
 
 def visualize_heatmap(scores, dense_goals, mapping):
@@ -392,7 +400,7 @@ if __name__ == '__main__':
     gt_target = mapping[0]['labels'][-1]
     filtered_goals = []
     for goal in sparse_goals:
-        if get_dis_p2p(goal, gt_target) < 25:
+        if get_dis_p2p(goal, gt_target) < 15:
             filtered_goals.append(goal)
     sparse_goals = np.array(filtered_goals)
 
@@ -414,6 +422,11 @@ if __name__ == '__main__':
     visualize_heatmap(N_scores, dense_goals, mapping[0])
 
     # print(dense_goals_org.shape)
-    target_scores = get_dense_goal_targets(dense_goals_org, mapping[0], 0).cpu().numpy()
+    target_scores = get_dense_goal_targets(dense_goals_org, mapping[0])
+    target_scores = F.softmax(target_scores, dim=-1).numpy()
+    print(target_scores)
+    print(target_scores.max(), target_scores.min())
     target_scores = (target_scores - target_scores.min()) / (target_scores.max() - target_scores.min())
     visualize_heatmap(target_scores, dense_goals_org, mapping[0])
+
+    

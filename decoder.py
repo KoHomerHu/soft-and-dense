@@ -35,7 +35,7 @@ class DecoderResCat(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, hidden_size, num_workers, label_smoothing=0.0, lane_head_num=2, lane_head_size=128, goal_head_num=2, goal_head_size=128):
+    def __init__(self, hidden_size, num_workers, label_smoothing=0.0, lane_head_num=1, lane_head_size=128, goal_head_num=1, goal_head_size=128):
         super(Decoder, self).__init__()
         self.hidden_size = hidden_size
 
@@ -81,13 +81,14 @@ class Decoder(nn.Module):
             dense_goals_lst.append(dense_goals)
 
         dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
+        # dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets_one_hot, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
 
         # compute dense_goal_loss
         if self.training:
             for i in range(batch_size):
                 loss[i] += self.dense_goal_loss(
                     dense_goal_scores_lst[i], 
-                    dense_goal_targets_lst[i].to(device)
+                    F.softmax(dense_goal_targets_lst[i].to(device), dim=-1)
                 )
 
         dense_goal_scores_numpy = [F.softmax(dense_goal_scores, dim=-1).detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]

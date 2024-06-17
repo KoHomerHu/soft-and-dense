@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
+import multiprocessing as mp
 
 from lib import PointSubGraph, CrossAttention, MLP
 import utils
@@ -34,7 +35,7 @@ class DecoderResCat(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, hidden_size, label_smoothing=0.0, lane_head_num=2, lane_head_size=128, goal_head_num=4, goal_head_size=128):
+    def __init__(self, hidden_size, num_workers, label_smoothing=0.0, lane_head_num=2, lane_head_size=128, goal_head_num=2, goal_head_size=128):
         super(Decoder, self).__init__()
         self.hidden_size = hidden_size
 
@@ -47,6 +48,8 @@ class Decoder(nn.Module):
         self.goals_2D_cross_attention = CrossAttention(hidden_size=hidden_size, attention_head_size=goal_head_size, num_attention_heads=goal_head_num) 
         self.goals_2D_point_sub_graph = PointSubGraph(hidden_size) # fuse goal feature and agent feature when encoding goals
         self.dense_goal_loss = nn.CrossEntropyLoss()
+
+        self.pool = mp.Pool(processes=num_workers)
 
     """
     Take inputs from VectorNet and outputs the average loss, the scores of the dense goals, the dense goal sets, and their displacement errors.
@@ -77,7 +80,18 @@ class Decoder(nn.Module):
             dense_goal_scores_lst.append(dense_goal_scores)
             dense_goals_lst.append(dense_goals)
 
-        return loss.mean(), dense_goal_scores_lst, dense_goals_lst
+        dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
+
+        # compute dense_goal_loss
+        if self.training:
+            for i in range(batch_size):
+                loss[i] += self.dense_goal_loss(
+                    dense_goal_scores_lst[i], 
+                    dense_goal_targets_lst[i].to(device)
+                )
+
+        dense_goal_scores_numpy = [F.softmax(dense_goal_scores, dim=-1).detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
+        return loss.mean(), dense_goal_scores_numpy, dense_goals_lst
 
     """
     Stage 1: Compute prediction of log scores of lanes and select top K lanes.
@@ -163,7 +177,7 @@ class Decoder(nn.Module):
     def get_dense_goal_scores(self, i, sparse_goals, mapping, device, scores, get_scores_inputs, k=150):
         # Sample dense goals from top K sparse goals.
         _, topk_ids = torch.topk(scores, k=min(k, len(scores)))
-        dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=3)
+        dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=2)
         dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
         # dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
         # include the sparse goals
@@ -179,24 +193,6 @@ class Decoder(nn.Module):
         scores = self.get_scores(dense_goals, *get_scores_inputs)
 
         return scores, dense_goals.detach().cpu().numpy()   
-    
-    """
-    Given the dense goals and the map information, compute the APF and convert to softmax scores.
-    We compute the attraction of the ground truth goal and the reference path to each candidate.
-    """
-    def get_dense_goal_targets(self, i: int, dense_goals: np.ndarray, mapping: List[Dict], device, T=20.0, K1=1.0, K2=2.0):
-        ground_truth_goal = mapping[i]['labels'][-1]
-        dense_goal_targets = torch.zeros(len(dense_goals), device=device, dtype=torch.float)
-        for j, goal in enumerate(dense_goals):
-            # Compute goal and reference path attraction
-            goal_dist = utils.get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
-            traj_dist = np.min(utils.get_dis_polyline2point(mapping[i]['reference_path'], goal)) # distance between the goal and the reference path
-            
-            dense_goal_targets[j] = -0.5 * K1 * goal_dist**2 - 0.5 * K2 * traj_dist**2
-
-        dense_goal_targets = F.softmax(dense_goal_targets / T, dim=-1)
-
-        return dense_goal_targets
 
     """
     The forward process for the i-th example in a batch.
@@ -212,12 +208,4 @@ class Decoder(nn.Module):
         # Get the dense goal set and compute the prediction of scores of dense goals.
         dense_goal_scores, dense_goals = self.get_dense_goal_scores(i, sparse_goals, mapping, device, sparse_goal_scores, get_scores_inputs)
 
-        # Compute loss for a training example
-        if self.training:
-            dense_goal_targets = self.get_dense_goal_targets(i, dense_goals, mapping, device)
-            loss[i] += self.dense_goal_loss(
-                dense_goal_scores, 
-                dense_goal_targets
-            )
-
-        return F.softmax(dense_goal_scores, dim=-1).detach().cpu().numpy(), dense_goals
+        return dense_goal_scores, dense_goals

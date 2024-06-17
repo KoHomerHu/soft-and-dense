@@ -4,6 +4,7 @@ import torch
 import math
 import inspect
 import numpy as np
+import random
 
 
 def merge_tensors(tensors: List[torch.Tensor], device, hidden_size=None) -> Tuple[Tensor, List[int]]:
@@ -281,6 +282,31 @@ def construct_reference_path(labels, reference_path, point_label, future_frame_n
                     reference_path = traj_segment + reference_path[closest_point_idx:] # Replace the first part
 
     return reference_path
+
+
+def cycle(iterable):
+    while True:
+        for x in iterable:
+            yield x
+
+
+class RandomSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, batch_size, shuffle=True):
+       self.dataset = dataset
+       self.batch_size = batch_size
+       self.shuffle = shuffle
+       self.idx = 0 if not self.shuffle else random.randint(0, len(self.dataset) - 1)
+
+    def __iter__(self):
+        mappings = []
+        for _ in range(self.batch_size):
+            mappings.append(self.dataset[self.idx])
+            self.idx = (self.idx + 1) % self.length if not self.shuffle else random.randint(0, len(self.dataset) - 1)
+        yield mappings
+
+    def __len__(self):
+        return len(self.dataset)
+
 
 
 def visualize_heatmap(scores, dense_goals, mapping):

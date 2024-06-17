@@ -95,7 +95,6 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
             cent_x=cent_x,
             cent_y=cent_y,
             angle=angle,
-            normalizer=normalizer,
         )
     )
 
@@ -313,10 +312,10 @@ def calc_ex_list(queue, queue_res):
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data_dir="./data/train/", core_num=1, temp_file_dir="./data/temp/temp.pkl", load_from_temp=True):
+    def __init__(self, data_dir="./data/train/", core_num=8, temp_file_path="./data/temp/temp_train.pkl", load_temp_file=True):
 
-        if load_from_temp:
-            pickle_file = open(temp_file_dir, "rb")
+        if load_temp_file:
+            pickle_file = open(temp_file_path, "rb")
             self.ex_list = pickle.load(pickle_file)
             pickle_file.close()
 
@@ -361,12 +360,12 @@ class Dataset(torch.utils.data.Dataset):
             for p in processes:
                 p.join()
 
-            os.makedirs(os.path.dirname(temp_file_dir), exist_ok=True)
-            pickle_file = open(temp_file_dir, "wb")
+            os.makedirs(os.path.dirname(temp_file_path), exist_ok=True)
+            pickle_file = open(temp_file_path, "wb")
             pickle.dump(self.ex_list, pickle_file)
             pickle_file.close()
 
-            print("Data dumped to ", temp_file_dir)
+            print("Data dumped to ", temp_file_path)
 
     def __len__(self):
         return len(self.ex_list)

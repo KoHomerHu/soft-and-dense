@@ -14,6 +14,7 @@ Inputs:
     - mapping: list of instances (dictionaries) obtained from argoverse2
     - device: device to run the model
 Outputs:
+    - loss: mean loss of the batch
     - dense_goal_scores_lst: scores (predicted probabilities) of the dense goals
     - dense_goals_lst: dense goal sets
 """

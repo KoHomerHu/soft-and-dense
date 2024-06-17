@@ -38,13 +38,13 @@ if __name__ == '__main__':
 
     arg = argparse.ArgumentParser()
 
-    arg.add_argument('--batch_size', type=int, default=16, help='Batch size of data to train the model.')
+    arg.add_argument('--batch_size', type=int, default=32, help='Batch size of data to train the model.')
     arg.add_argument('--num_iters', type=int, default=100, help='Number of iterations within each epoch to train the model.')
     arg.add_argument('--num_epochs', type=int, default=50, help='Number of epochs to train the model.')
     arg.add_argument('--hidden_size', type=int, default=128, help='Size of hidden states encoded by VectorNet.')
     arg.add_argument('--lr0', type=float, default=1e-3, help='Initial learning rate for AdamW to train the model.')
     arg.add_argument('--lrf', type=float, default=5e-4, help='Final learning rate for AdamW to train the model.')
-    arg.add_argument('--num_workers', type=int, default=8, help='Number of workers to use for computing the dense goal targets.')
+    arg.add_argument('--num_workers', type=int, default=14, help='Number of workers to use for computing the dense goal targets.')
 
     arg.add_argument('--model_load_path', type=str, default=None, help='Path to load the model (*.pt) file.')
     arg.add_argument('--model_save_path', type=str, default='./models/model.pt', help='Path to save the mode(*.pt) file v.')

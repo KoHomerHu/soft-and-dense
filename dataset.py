@@ -312,7 +312,7 @@ def calc_ex_list(queue, queue_res):
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data_dir="./data/train/", core_num=8, temp_file_path="./data/temp/temp_train.pkl", load_temp_file=True):
+    def __init__(self, data_dir="./data/train/", core_num=14, temp_file_path="./data/temp/temp_train.pkl", load_temp_file=True):
 
         if load_temp_file:
             pickle_file = open(temp_file_path, "rb")

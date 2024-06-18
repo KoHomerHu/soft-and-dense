@@ -323,7 +323,7 @@ def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0,
 
     for i, goal in enumerate(dense_goals):
         goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
-        if get_dis_p2p(goal, ground_truth_goal) <= 15:
+        if goal_dist <= 15:
             # Compute goal and reference path attraction
             traj_dist = np.min(get_dis_polyline2point(mapping['reference_path'], goal)) # distance between the goal and the reference path
             dense_goal_targets[i] = max(-0.5 * K1 * goal_dist**2 - 0.5 * K2 * traj_dist**2, -1e9) / T

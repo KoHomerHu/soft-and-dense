@@ -313,7 +313,7 @@ class RandomSampler(torch.utils.data.Sampler):
 Given the dense goals and the map information, compute the APF and convert to softmax scores.
 We compute the attraction of the ground truth goal and the reference path to each candidate.
 """
-def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=20.0, K1=1.0, K2=2.0):
+def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0, K1=1.0, K2=2.0):
     ground_truth_goal = mapping['labels'][-1]
     dense_goal_targets = torch.zeros(len(dense_goals), dtype=torch.float)
 

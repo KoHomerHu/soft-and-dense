@@ -35,7 +35,7 @@ class DecoderResCat(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, hidden_size, num_workers, label_smoothing=0.0, lane_head_num=1, lane_head_size=128, goal_head_num=2, goal_head_size=128):
+    def __init__(self, hidden_size, num_workers, label_smoothing=0.0, lane_head_num=1, lane_head_size=64, goal_head_num=2, goal_head_size=64):
         super(Decoder, self).__init__()
         self.hidden_size = hidden_size
 
@@ -80,8 +80,13 @@ class Decoder(nn.Module):
             dense_goal_scores_lst.append(dense_goal_scores)
             dense_goals_lst.append(dense_goals)
 
+        # import time
+        # start = time.time()
         dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
+        # print('\nTime Soft:', time.time() - start)
+        # start = time.time()
         # dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets_one_hot, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
+        # print('\nTime One Hot:', time.time() - start)
 
         # compute dense_goal_loss
         if self.training:

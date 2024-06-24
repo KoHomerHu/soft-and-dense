@@ -325,7 +325,12 @@ def inv_proj(point, coeff):
             min_dist = dist
             t_hat = root
 
-    return t_hat
+    point_hat = (
+        a_2 * t_hat**2 + a_1 * t_hat + a_0,
+        b_2 * t_hat**2 + b_1 * t_hat + b_0
+    )
+
+    return t_hat.real, point_hat
 
 
 """
@@ -390,7 +395,7 @@ def construct_quadratic_path(reference_path, point_label):
         loss = 0
         for point in reference_path:
             x, y = point
-            t_hat = inv_proj(point, coeff).real
+            t_hat, _ = inv_proj(point, coeff)
             loss += (a_2 * t_hat**2 + a_1 * t_hat + a_0 - x)**2 + (b_2 * t_hat**2 + b_1 * t_hat + b_0 - y)**2
 
         regularized_loss = loss + eta * math.sqrt(a_2**2 + a_1**2 + a_0**2 + b_2**2 + b_1**2 + b_0**2)
@@ -439,17 +444,14 @@ We compute the attraction of the ground truth goal and the reference path to eac
 def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0, K1=1.0, K2=2.0):
     ground_truth_goal = mapping['labels'][-1]
     dense_goal_targets = torch.zeros(len(dense_goals), dtype=torch.float)
+    compute_traj = mapping['quadratic_path'] is not None
 
     for i, goal in enumerate(dense_goals):
         goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
         if goal_dist <= 15:
             # Compute goal and reference path attraction
-            if mapping['quadratic_path'] is not None:
-                t_hat = inv_proj(goal, mapping['quadratic_path'])
-                point_hat = (
-                    mapping['quadratic_path']["a_2"] * t_hat**2 + mapping['quadratic_path']["a_1"] * t_hat + mapping['quadratic_path']["a_0"], 
-                    mapping['quadratic_path']["b_2"] * t_hat**2 + mapping['quadratic_path']["b_1"] * t_hat + mapping['quadratic_path']["b_0"]
-                )
+            if compute_traj:
+                _, point_hat = inv_proj(goal, mapping['quadratic_path'])
                 traj_dist = get_dis_p2p(goal, point_hat).item()
             else:
                 traj_dist = 0.0

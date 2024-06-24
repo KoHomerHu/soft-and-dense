@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 import argparse
 import matplotlib.pyplot as plt
-import pickle
+# import pickle
 
 from encoder_decoder import EncoderDecoder
 from dataset import Dataset
@@ -17,14 +17,21 @@ def train_one_epoch(model, dataloader, optimizer, device, epoch, iterations=1000
 
         for _ in range(iterations):
 
+            import time
+            # start_time = time.time()
             mapping = next(iterator)
+            # print("Time to get mapping: ", time.time() - start_time)
 
             optimizer.zero_grad()
 
+            start_time = time.time()
             loss, _, _ = model(mapping, device)
+            print("Time to get inference: ", time.time() - start_time)
 
+            start_time = time.time()
             loss.backward()
             optimizer.step()
+            print("Time to backprop: ", time.time() - start_time)
 
             pbar.set_postfix({'loss': loss.detach().cpu().item()})
             pbar.update(1)

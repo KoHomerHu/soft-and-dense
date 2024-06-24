@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple
+from scipy.optimize import minimize
 from torch import Tensor
 import torch.nn.functional as F
 import torch
@@ -285,6 +286,128 @@ def construct_reference_path(labels, reference_path, point_label, future_frame_n
     return reference_path
 
 
+"""
+Find all analytical real roots within the range [a, b] of the cubic equation: c_3 t^3 + c_2 t^2 + c_1 t + c_0 = 0.
+"""
+def solve_cubic(c_3, c_2, c_1, c_0, range=[0, 1]):
+    roots = np.roots([c_3, c_2, c_1, c_0])
+    real_roots_in_range = []
+    for root in roots:
+        if np.isreal(root) and range[0] <= root <= range[1]:
+            real_roots_in_range.append(root)
+    return real_roots_in_range
+
+
+"""
+Find the input t_hat that gives the projecction of point (x, y) on the quadratic path Q: (a_2 t^2 + a_1 + a_0, b_2 t^2 + b_1 t + b_0).
+"""
+def inv_proj(point, coeff):
+    x, y = point
+    a_2, a_1, a_0 = coeff["a_2"], coeff["a_1"], coeff["a_0"]
+    b_2, b_1, b_0 = coeff["b_2"], coeff["b_1"], coeff["b_0"]
+
+    c_3 = (4 * a_2**2 + 4 * b_2**2).item()
+    c_2 = (6 * a_1 * a_2 + 6 * b_1 * b_2).item()
+    c_1 = (-4 * a_2 * x + 2 * a_1 ** 2 + 4 * a_0 * a_2 - 4 * b_2 * y + 2 * b_1 ** 2 + 4 * b_0 * b_2).item()
+    c_0 = (-2 * a_1 * x + 2 * a_0 * a_1 - 2 * b_1 * y + 2 * b_0 * b_1).item()
+
+    roots = solve_cubic(c_3, c_2, c_1, c_0)
+
+    roots.extend([0.0, 1.0]) # add the boundary into consideration
+
+    t_hat = None
+    min_dist = float('inf')
+
+    for root in roots:
+        point_hat = (a_2 * root**2 + a_1 * root + a_0, b_2 * root**2 + b_1 * root + b_0)
+        dist = (point[0] - point_hat[0]) ** 2 + (point[1] - point_hat[1]) ** 2
+        if dist < min_dist:
+            min_dist = dist
+            t_hat = root
+
+    return t_hat
+
+
+"""
+Given reference path, use a quadratic path that passes through the two ends of the reference path and the target point.
+Use scipy.optimize to find optimal coefficients with least square error.
+Returns parameters of the quadratic path such that x(t) = a_2 t^2 + a_1 t + a_0, y(t) = b_2 t^2 + b_1 t + b_0.
+"""
+def construct_quadratic_path(reference_path, point_label):
+
+    reference_path = np.array(reference_path)
+    closest_point_idx = np.argmin(get_dis_batch(reference_path, point_label))
+
+    p1 = reference_path[0]
+    p2 = reference_path[closest_point_idx]
+    p3 = reference_path[-1]
+
+    if get_dis_p2p(p1, p2) < 1e-7 or get_dis_p2p(p2, p3) < 1e-7:
+        idx = 0
+        cand_p2 = reference_path[idx]
+        is_not_valid = get_dis_p2p(p1, cand_p2) < 1e-7 or get_dis_p2p(cand_p2, p3) < 1e-7
+        while idx < len(reference_path) and is_not_valid:
+            cand_p2 = reference_path[idx]
+            is_not_valid = get_dis_p2p(p1, cand_p2) < 1e-7 or get_dis_p2p(cand_p2, p3) < 1e-7
+            idx += 1
+        p2 = cand_p2
+    
+    if get_dis_p2p(p1, p2) < 1e-7 or get_dis_p2p(p2, p3) < 1e-7:
+        return None
+    
+    """
+    Use Lagrange interpolation to find the quadratic coefficients for x(t) and y(t).
+    """
+    def transform(t):
+        interpolated_coeff = {
+            "a_2" : (p1[0] * t - p1[0] + p2[0] - p3[0] * t) / (t**2 - t),
+            "a_1" : (-p1[0] * t**2 + p1[0] - p2[0] + p3[0] * t**2) / (t**2 - t),
+            "a_0" : (p1[0] * t**2 - p1[0] * t) / (t**2 - t),
+            "b_2" : (p1[1] * t - p1[1] + p2[1] - p3[1] * t) / (t**2 - t),
+            "b_1" : (-p1[1] * t**2 + p1[1] - p2[1] + p3[1] * t**2) / (t**2 - t),
+            "b_0" : (p1[1] * t**2 - p1[1] * t) / (t**2 - t)
+        }
+
+        # func = lambda x: ((interpolated_coeff["a_2"] * x**2 + interpolated_coeff["a_1"] * x + interpolated_coeff["a_0"]), (interpolated_coeff["b_2"] * x**2 + interpolated_coeff["b_1"] * x + interpolated_coeff["b_0"]))
+        # print("p1: ", p1)
+        # print("interpolated p1: ", func(0.0))
+        # print("p2: ", p2)
+        # print("interpolated p2: ", func(t))
+        # print("p3: ", p3)
+        # print("interpolated p3: ", func(1.0))
+
+        return interpolated_coeff
+
+    """
+    Compute the least square error between the reference path and the quadratic path.
+    Use L2 regularization to prevent overfitting.
+    """
+    def LSE(t, eta=0.1):
+        coeff = transform(t)
+        a_2, a_1, a_0 = coeff["a_2"], coeff["a_1"], coeff["a_0"]
+        b_2, b_1, b_0 = coeff["b_2"], coeff["b_1"], coeff["b_0"]
+
+        loss = 0
+        for point in reference_path:
+            x, y = point
+            t_hat = inv_proj(point, coeff).real
+            loss += (a_2 * t_hat**2 + a_1 * t_hat + a_0 - x)**2 + (b_2 * t_hat**2 + b_1 * t_hat + b_0 - y)**2
+
+        regularized_loss = loss + eta * math.sqrt(a_2**2 + a_1**2 + a_0**2 + b_2**2 + b_1**2 + b_0**2)
+
+        return regularized_loss
+    
+    # Use scipy.optimize to find the optimal t_x and t_y in (0, 1)
+    res = minimize(
+        fun=LSE,
+        x0=0.5,
+        method='L-BFGS-B',
+        bounds=[(1e-7, 1-1e-7),], # make sure t is not strictly 0 or 1
+    )
+
+    return transform(res.x)
+
+
 def cycle(iterable):
     while True:
         for x in iterable:
@@ -317,15 +440,19 @@ def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0,
     ground_truth_goal = mapping['labels'][-1]
     dense_goal_targets = torch.zeros(len(dense_goals), dtype=torch.float)
 
-    if len(mapping['reference_path']) < 2:
-        K1 = 6.0
-        K2 = 0.0
-
     for i, goal in enumerate(dense_goals):
         goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
         if goal_dist <= 15:
             # Compute goal and reference path attraction
-            traj_dist = np.min(get_dis_polyline2point(mapping['reference_path'], goal)) # distance between the goal and the reference path
+            if mapping['quadratic_path'] is not None:
+                t_hat = inv_proj(goal, mapping['quadratic_path'])
+                point_hat = (
+                    mapping['quadratic_path']["a_2"] * t_hat**2 + mapping['quadratic_path']["a_1"] * t_hat + mapping['quadratic_path']["a_0"], 
+                    mapping['quadratic_path']["b_2"] * t_hat**2 + mapping['quadratic_path']["b_1"] * t_hat + mapping['quadratic_path']["b_0"]
+                )
+                traj_dist = get_dis_p2p(goal, point_hat).item()
+            else:
+                traj_dist = 0.0
             dense_goal_targets[i] = max(-0.5 * K1 * goal_dist**2 - 0.5 * K2 * traj_dist**2, -1e9) / T
         else:
             dense_goal_targets[i] = -1e9 / T
@@ -361,8 +488,28 @@ def visualize_heatmap(scores, dense_goals, mapping):
     plt.plot(future[:, 0], future[:, 1], 'r-')
     plt.scatter(future[-1, 0], future[-1, 1], color='r', marker='*', s=50)
 
-    reference_path = mapping['reference_path']
-    plt.plot(reference_path[:, 0], reference_path[:, 1], 'b-', linewidth=2)
+    # reference_path = mapping['reference_path']
+    # plt.plot(reference_path[:, 0], reference_path[:, 1], 'b-', linewidth=2)
+
+    coeff = mapping['quadratic_path']
+    if coeff is not None:
+        print(coeff)
+        a_2, a_1, a_0 = coeff["a_2"], coeff["a_1"], coeff["a_0"]
+        b_2, b_1, b_0 = coeff["b_2"], coeff["b_1"], coeff["b_0"]
+        t = np.linspace(0, 1, 1000)
+        x_t = a_2 * t**2 + a_1 * t + a_0
+        y_t = b_2 * t**2 + b_1 * t + b_0
+        # filtered_x_t = []
+        # filtered_y_t = []
+        # for i in range(len(x_t)):
+        #     if get_dis_p2p((x_t[i], y_t[i]), future[-1]) <= 15:
+        #         filtered_x_t.append(x_t[i])
+        #         filtered_y_t.append(y_t[i])
+        # x_t = np.array(filtered_x_t)
+        # y_t = np.array(filtered_y_t)
+        plt.plot(x_t, y_t, 'b-', linewidth=2)
+        plt.scatter(a_0, b_0, color='b', marker='*', s=50)
+        plt.scatter(a_2 + a_1 + a_0, b_2 + b_1 + b_0, color='b', marker='*', s=50)
 
     # Make x and y axes have the same scale
     plt.axis('equal')
@@ -412,9 +559,9 @@ if __name__ == '__main__':
     loss, scores_lst, dense_goals_lst = model(mapping, 0)
     scores = scores_lst[0]
     dense_goals  = dense_goals_lst[0]
-    print(scores.max().item(), scores.min().item())
-    print(scores.sum())
-    print(loss.item())
+    # print(scores.max().item(), scores.min().item())
+    # print(scores.sum())
+    # print(loss.item())
     plt.plot(scores)
     plt.show()
     N_scores = (scores - scores.min()) / (scores.max() - scores.min()) # normalize scores
@@ -424,8 +571,8 @@ if __name__ == '__main__':
     # print(dense_goals_org.shape)
     target_scores = get_dense_goal_targets(dense_goals_org, mapping[0])
     target_scores = F.softmax(target_scores, dim=-1).numpy()
-    print(target_scores)
-    print(target_scores.max(), target_scores.min())
+    # print(target_scores)
+    # print(target_scores.max(), target_scores.min())
     target_scores = (target_scores - target_scores.min()) / (target_scores.max() - target_scores.min())
     visualize_heatmap(target_scores, dense_goals_org, mapping[0])
 

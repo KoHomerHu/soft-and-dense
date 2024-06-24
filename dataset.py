@@ -250,8 +250,8 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
         centerline.append((point + closest_point) / 2)
 
     reference_path = utils.construct_reference_path(labels, np.array(centerline), point_label, future_frame_num)
-    
-    mapping['reference_path'] = np.array(reference_path)
+
+    mapping['quadratic_path'] = utils.construct_quadratic_path(reference_path, point_label)
 
     # Generate sparse goals
     visit = {}
@@ -278,7 +278,6 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
             matrix=np.array(vectors),
             focal_past=np.array(focal_past),
             labels=np.array(labels).reshape([future_frame_num, 2]),
-            gt_trajectory_global_coordinates=np.array(gt_trajectory_global_coordinates),
             polyline_spans=[slice(each[0], each[1]) for each in polyline_spans],
             agents=agents,
             map_start_polyline_idx=map_start_polyline_idx,

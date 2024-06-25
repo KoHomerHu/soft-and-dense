@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from typing import Dict, List
 
@@ -32,6 +33,7 @@ class EncoderDecoder(nn.Module):
                 nn.init.xavier_uniform_(param)
 
     def forward(self, mapping: List[Dict]):
-        device = mapping[0]['matrix'].device
-        mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states = self.encoder(mapping, device)
+        print(len(mapping))
+        device = torch.tensor([0.0]).cuda().device
+        mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device = self.encoder(mapping, device)
         return self.decoder(mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device)

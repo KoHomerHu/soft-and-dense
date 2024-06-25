@@ -10,11 +10,6 @@ from dataset import Dataset
 import utils
 import os
 
-def transform(mapping):
-    for i in range(len(mapping)):
-        mapping[i]['matrix'] = torch.tensor(mapping[i]['matrix'])
-    return mapping
-
 
 def train_one_epoch(model, dataloader, optimizer, epoch, arg):
     iterator = iter(utils.cycle(dataloader))
@@ -24,7 +19,7 @@ def train_one_epoch(model, dataloader, optimizer, epoch, arg):
 
         for _ in range(arg.num_iters):
 
-            mapping = transform(next(iterator))
+            mapping = next(iterator)
 
             optimizer.zero_grad()
 
@@ -51,8 +46,8 @@ if __name__ == '__main__':
     arg.add_argument('--hidden_size', type=int, default=128, help='Size of hidden states encoded by VectorNet.')
     arg.add_argument('--lr0', type=float, default=1e-3, help='Initial learning rate for AdamW to train the model.')
     arg.add_argument('--lrf', type=float, default=5e-4, help='Final learning rate for AdamW to train the model.')
-    arg.add_argument('--num_workers', type=int, default=14, help='Number of workers to use for computing the dense goal targets.')
-    arg.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use for training the model.')
+    arg.add_argument('--num_cpus', type=int, default=14, help='Number of CPUs to use for computing the dense goal targets.')
+    arg.add_argument('--num_gpus', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use for training the model.')
 
     arg.add_argument('--model_load_path', type=str, default=None, help='Path to load the model (*.pt) file.')
     arg.add_argument('--model_save_path', type=str, default='./models/model.pt', help='Path to save the mode(*.pt) file v.')
@@ -68,7 +63,7 @@ if __name__ == '__main__':
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    model = EncoderDecoder(arg.hidden_size, num_workers=arg.num_workers).to(device)
+    model = EncoderDecoder(arg.hidden_size, num_workers=arg.num_cpus).to(device)
     if arg.model_load_path is not None:
         model.load_state_dict(torch.load(arg.model_load_path))
     model = DataParallel(model, device_ids=[i for i in range(arg.num_gpus)])
@@ -98,7 +93,7 @@ if __name__ == '__main__':
     plt.xlabel('Iterations')
     plt.ylabel('Loss')
     plt.title('Loss')
-    plt.ylim(0, 12)
+    plt.ylim(0, 13)
     plt.show()
 
 

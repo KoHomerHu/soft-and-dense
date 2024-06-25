@@ -132,4 +132,4 @@ class VectorNet(nn.Module):
 
         hidden_states = self.global_graph(inputs, attention_mask, mapping)
 
-        return mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device # inputs to decoder
+        return mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states # inputs to decoder

@@ -544,6 +544,7 @@ if __name__ == '__main__':
     
     mapping = [argoverse2_get_instance('./data/train/' + arg.dir + '/')]
     model = EncoderDecoder().to(0)
+    model.load_state_dict(torch.load('./models/model.pt', map_location='cpu'))
 
     sparse_goals = mapping[0]['goals_2D']
     gt_target = mapping[0]['labels'][-1]

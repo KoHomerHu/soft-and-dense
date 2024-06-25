@@ -31,6 +31,7 @@ class EncoderDecoder(nn.Module):
             if param.dim() > 1:
                 nn.init.xavier_uniform_(param)
 
-    def forward(self, mapping: List[Dict], device):
-        mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device = self.encoder(mapping, device)
+    def forward(self, mapping: List[Dict]):
+        device = next(self.parameters()).device # get the device of the model
+        mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states = self.encoder(mapping, device)
         return self.decoder(mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device)

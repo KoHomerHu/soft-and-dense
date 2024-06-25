@@ -1,4 +1,5 @@
 import torch
+from torch.nn.parallel import DataParallel
 from tqdm import tqdm
 import argparse
 import matplotlib.pyplot as plt
@@ -9,29 +10,23 @@ from dataset import Dataset
 import utils
 import os
 
-def train_one_epoch(model, dataloader, optimizer, device, epoch, iterations=1000):
+
+def train_one_epoch(model, dataloader, optimizer, epoch, arg):
     iterator = iter(utils.cycle(dataloader))
 
-    with tqdm(total=iterations, desc=f'Epoch {epoch + 1}') as pbar:
+    with tqdm(total=arg.num_iters, desc=f'Epoch {epoch + 1}') as pbar:
         loss_lst = []
 
-        for _ in range(iterations):
+        for _ in range(arg.num_iters):
 
-            import time
-            # start_time = time.time()
             mapping = next(iterator)
-            # print("Time to get mapping: ", time.time() - start_time)
 
             optimizer.zero_grad()
 
-            start_time = time.time()
-            loss, _, _ = model(mapping, device)
-            print("Time to get inference: ", time.time() - start_time)
+            loss, _, _ = model(mapping)
 
-            start_time = time.time()
             loss.backward()
             optimizer.step()
-            print("Time to backprop: ", time.time() - start_time)
 
             pbar.set_postfix({'loss': loss.detach().cpu().item()})
             pbar.update(1)
@@ -52,6 +47,7 @@ if __name__ == '__main__':
     arg.add_argument('--lr0', type=float, default=1e-3, help='Initial learning rate for AdamW to train the model.')
     arg.add_argument('--lrf', type=float, default=5e-4, help='Final learning rate for AdamW to train the model.')
     arg.add_argument('--num_workers', type=int, default=14, help='Number of workers to use for computing the dense goal targets.')
+    arg.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use for training the model.')
 
     arg.add_argument('--model_load_path', type=str, default=None, help='Path to load the model (*.pt) file.')
     arg.add_argument('--model_save_path', type=str, default='./models/model.pt', help='Path to save the mode(*.pt) file v.')
@@ -63,11 +59,14 @@ if __name__ == '__main__':
 
     arg = arg.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    assert arg.batch_size % arg.num_gpus == 0 # batch size should be divisible by the number of GPUs
+
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
     model = EncoderDecoder(arg.hidden_size, num_workers=arg.num_workers).to(device)
     if arg.model_load_path is not None:
         model.load_state_dict(torch.load(arg.model_load_path))
+    model = DataParallel(model, device_ids=[i for i in range(arg.num_gpus)])
 
     dataset = Dataset(arg.data_dir, arg.core_num, arg.temp_file_path, load_temp_file=arg.load_temp_file)
     dataloader = utils.RandomSampler(dataset, arg.batch_size, shuffle=True)
@@ -78,14 +77,13 @@ if __name__ == '__main__':
     loss_lst_lst = []
 
     for epoch in range(arg.num_epochs):
-        ret = train_one_epoch(model, dataloader, optimizer, device, epoch, iterations=arg.num_iters)
+        ret = train_one_epoch(model, dataloader, optimizer, epoch, arg)
         loss_lst_lst.append(ret)
         scheduler.step()
 
     if not os.path.exists(os.path.dirname(arg.model_save_path)):
         os.makedirs(os.path.dirname(arg.model_save_path), exist_ok=True)
 
-    torch.save(model.state_dict(), arg.model_save_path)
     torch.save(model.state_dict(), arg.model_save_path)
 
     loss_lst = []

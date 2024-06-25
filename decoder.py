@@ -35,7 +35,7 @@ class DecoderResCat(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, hidden_size, num_workers, label_smoothing=0.0, lane_head_num=1, lane_head_size=64, goal_head_num=2, goal_head_size=64):
+    def __init__(self, hidden_size, num_workers, label_smoothing=0.0, lane_head_num=1, lane_head_size=128, goal_head_num=2, goal_head_size=128):
         super(Decoder, self).__init__()
         self.hidden_size = hidden_size
 

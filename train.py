@@ -10,6 +10,11 @@ from dataset import Dataset
 import utils
 import os
 
+def transform(mapping):
+    for i in range(len(mapping)):
+        mapping[i]['matrix'] = torch.tensor(mapping[i]['matrix'])
+    return mapping
+
 
 def train_one_epoch(model, dataloader, optimizer, epoch, arg):
     iterator = iter(utils.cycle(dataloader))
@@ -19,7 +24,7 @@ def train_one_epoch(model, dataloader, optimizer, epoch, arg):
 
         for _ in range(arg.num_iters):
 
-            mapping = next(iterator)
+            mapping = transform(next(iterator))
 
             optimizer.zero_grad()
 

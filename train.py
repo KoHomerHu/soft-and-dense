@@ -11,6 +11,19 @@ import utils
 import os
 
 
+def devide_mapping(mapping, num_gpus):
+    num_mapping = len(mapping)
+    num_mapping_per_gpu = num_mapping // num_gpus
+
+    mapping_lst = []
+    for i in range(num_gpus):
+        start = i * num_mapping_per_gpu
+        end = (i + 1) * num_mapping_per_gpu if i != num_gpus - 1 else num_mapping
+        mapping_lst.append(mapping[start:end])
+
+    return mapping_lst
+
+
 def train_one_epoch(model, dataloader, optimizer, epoch, arg):
     iterator = iter(utils.cycle(dataloader))
 
@@ -19,11 +32,11 @@ def train_one_epoch(model, dataloader, optimizer, epoch, arg):
 
         for _ in range(arg.num_iters):
 
-            mapping = next(iterator)
+            mapping_lst = devide_mapping(next(iterator), arg.num_gpus)
 
             optimizer.zero_grad()
 
-            loss, _, _ = model(mapping)
+            loss = model(mapping_lst).mean() # average loss across different processes
 
             loss.backward()
             optimizer.step()

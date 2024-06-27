@@ -12,3 +12,19 @@ Inspired by the artificial potential field (APF) approach for path planning, for
   <img src="./figures/dense_goal_heatmap_example-2.png" alt="dense_goal_example-1.png" width="300"/>
   <img src="./figures/dense_goal_heatmap_example-3.png" alt="dense_goal_example-1.png" width="300"/>
 </p>
+
+## Train
+
+Use the following command to train (assuming the preprocessed data is saved in ```temp_train.pkl```):
+
+```python train.py --batch_size 64 --num_epochs 50 --lr0 5e-3 --lrf 1e-4 --num_cpus 24 --distributed_training --load_temp_file --temp_file_path "../data/temp_train.pkl"```
+
+**Remark.** The loss displayed during training generally does not indicate the model performance.
+
+To preprocess the argoverse 2 data (assumably under ```./data/train/```), use the following script:
+
+```
+from dataset import Dataset
+
+Dataset(load_temp_file=False)
+```

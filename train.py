@@ -111,7 +111,8 @@ def train_fn(rank, world_size, arg):
 
             optimizer.step()
 
-            pbar.set_postfix({'loss': loss.detach().cpu().item()})
+            if rank == 0:
+                pbar.set_postfix({'loss': loss.detach().cpu().item()})
 
         scheduler.step()
 

@@ -32,18 +32,7 @@ class EncoderDecoder(nn.Module):
             if param.dim() > 1:
                 nn.init.xavier_uniform_(param)
 
-    def forward(self, mapping_lst):
-        device = torch.tensor([0.0]).cuda().device
-        device_id = device.index
-        mapping = mapping_lst[device_id]
-        # print(f"\nDevice No. {device_id} has {len(mapping)} number of mappings to be computed.")
+    def forward(self, mapping, device):
         mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device = self.encoder(mapping, device)
-        # print(f"Device No. {device_id} is outputting from the encoder: \n")
-        # print(lane_states_batch[0].shape)
         output = self.decoder(mapping, batch_size, lane_states_batch, inputs, inputs_lengths, hidden_states, device)
-        # print(f"Device No. {device_id} is outputting from the decoder: \n")
-        # print(output[0])
-        if self.training:
-            return output[0]
-        else:
-            return output
+        return output

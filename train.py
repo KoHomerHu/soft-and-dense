@@ -1,9 +1,11 @@
 import torch
-from torch.nn.parallel import DataParallel
 from tqdm import tqdm
 import argparse
-import matplotlib.pyplot as plt
-# import pickle
+
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 from encoder_decoder import EncoderDecoder
 from dataset import Dataset
@@ -11,20 +13,7 @@ import utils
 import os
 
 
-def devide_mapping(mapping, num_gpus):
-    num_mapping = len(mapping)
-    num_mapping_per_gpu = num_mapping // num_gpus
-
-    mapping_lst = []
-    for i in range(num_gpus):
-        start = i * num_mapping_per_gpu
-        end = (i + 1) * num_mapping_per_gpu if i != num_gpus - 1 else num_mapping
-        mapping_lst.append(mapping[start:end])
-
-    return mapping_lst
-
-
-def train_one_epoch(model, dataloader, optimizer, epoch, arg):
+def train_one_epoch(model, dataloader, optimizer, epoch, arg, device):
     iterator = iter(utils.cycle(dataloader))
 
     with tqdm(total=arg.num_iters, desc=f'Epoch {epoch + 1}') as pbar:
@@ -32,11 +21,11 @@ def train_one_epoch(model, dataloader, optimizer, epoch, arg):
 
         for _ in range(arg.num_iters):
 
-            mapping_lst = devide_mapping(next(iterator), arg.num_gpus)
+            mapping = next(iterator)
 
             optimizer.zero_grad()
 
-            loss = model(mapping_lst).mean() # average loss across different processes
+            loss, _, _ = model(mapping, device=device)
 
             loss.backward()
             optimizer.step()
@@ -47,6 +36,97 @@ def train_one_epoch(model, dataloader, optimizer, epoch, arg):
             loss_lst.append(loss.detach().cpu().item())
         
         return loss_lst
+
+
+def single_gpu_training(arg):
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    model = EncoderDecoder(arg.hidden_size, num_workers=arg.num_cpus).to(device)
+    if arg.model_load_path is not None:
+        model.load_state_dict(torch.load(arg.model_load_path))
+
+    dataset = Dataset(arg.data_dir, arg.core_num, arg.temp_file_path, load_temp_file=arg.load_temp_file)
+    dataloader = utils.RandomSampler(dataset, arg.batch_size, shuffle=True)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=arg.lr0)
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=arg.lrf/arg.lr0, total_iters=arg.num_epochs)
+
+    for epoch in range(arg.num_epochs):
+        train_one_epoch(model, dataloader, optimizer, epoch, arg, device)
+        scheduler.step()
+
+    if not os.path.exists(os.path.dirname(arg.model_save_path)):
+        os.makedirs(os.path.dirname(arg.model_save_path), exist_ok=True)
+
+    torch.save(model.state_dict(), arg.model_save_path)
+
+
+def setup(rank, world_size, is_windows=False):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+
+    # initialize the process group
+    if is_windows:
+        dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    else:
+        dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+
+def train_fn(rank, world_size, arg):
+
+    setup(rank, world_size, is_windows=arg.is_windows)
+
+    model = EncoderDecoder(arg.hidden_size, num_workers=arg.num_cpus).to(rank)
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+
+    if arg.model_load_path is not None:
+        model.load_state_dict(torch.load(arg.model_load_path))
+
+    dataset = Dataset(arg.data_dir, arg.core_num, arg.temp_file_path, load_temp_file=arg.load_temp_file)
+    sampler = DistributedSampler(dataset, shuffle=True)
+    dataloader = torch.utils.data.DataLoader(
+        dataset, 
+        batch_size = arg.batch_size // world_size, 
+        sampler = sampler,
+        collate_fn = lambda batch : [item for item in batch]
+    )
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=arg.lr0)
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=arg.lrf/arg.lr0, total_iters=arg.num_epochs)
+
+    for epoch in range(arg.num_epochs):
+        sampler.set_epoch(epoch) # guarantee a different shuffling order for each epoch
+
+        if rank == 0:
+            pbar = tqdm(dataloader, desc=f'Epoch {epoch + 1}')
+        else:
+            pbar = dataloader
+        
+        for _, batch in enumerate(pbar):
+            optimizer.zero_grad()
+
+            loss, _, _ = model(batch, device=rank)
+
+            loss.backward()
+
+            optimizer.step()
+
+            pbar.set_postfix({'loss': loss.detach().cpu().item()})
+
+        scheduler.step()
+
+        dist.barrier() # wait for all processes to finish the current epoch
+
+    dist.destroy_process_group() # clean up
+
+
+def multi_gpu_training(arg):
+    mp.spawn(
+        train_fn,
+        args=(arg.num_gpus, arg),
+        nprocs=arg.num_gpus,
+        join=True
+    )
     
 
 if __name__ == '__main__':
@@ -61,6 +141,8 @@ if __name__ == '__main__':
     arg.add_argument('--lrf', type=float, default=5e-4, help='Final learning rate for AdamW to train the model.')
     arg.add_argument('--num_cpus', type=int, default=14, help='Number of CPUs to use for computing the dense goal targets.')
     arg.add_argument('--num_gpus', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use for training the model.')
+    arg.add_argument('--is_windows', action='store_true', help='Set this flag if the OS is Windows.')
+    arg.add_argument('--distributed_training', action='store_true', help='Set this flag to train the model in parallel.')
 
     arg.add_argument('--model_load_path', type=str, default=None, help='Path to load the model (*.pt) file.')
     arg.add_argument('--model_save_path', type=str, default='./models/model.pt', help='Path to save the mode(*.pt) file v.')
@@ -74,39 +156,7 @@ if __name__ == '__main__':
 
     assert arg.batch_size % arg.num_gpus == 0 # batch size should be divisible by the number of GPUs
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-    model = EncoderDecoder(arg.hidden_size, num_workers=arg.num_cpus).to(device)
-    if arg.model_load_path is not None:
-        model.load_state_dict(torch.load(arg.model_load_path))
-    model = DataParallel(model, device_ids=[i for i in range(arg.num_gpus)])
-
-    dataset = Dataset(arg.data_dir, arg.core_num, arg.temp_file_path, load_temp_file=arg.load_temp_file)
-    dataloader = utils.RandomSampler(dataset, arg.batch_size, shuffle=True)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=arg.lr0)
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=arg.lrf/arg.lr0, total_iters=arg.num_epochs)
-
-    loss_lst_lst = []
-
-    for epoch in range(arg.num_epochs):
-        ret = train_one_epoch(model, dataloader, optimizer, epoch, arg)
-        loss_lst_lst.append(ret)
-        scheduler.step()
-
-    if not os.path.exists(os.path.dirname(arg.model_save_path)):
-        os.makedirs(os.path.dirname(arg.model_save_path), exist_ok=True)
-
-    torch.save(model.state_dict(), arg.model_save_path)
-
-    loss_lst = []
-    for lst in loss_lst_lst:
-        loss_lst += lst
-    plt.plot(loss_lst)
-    plt.xlabel('Iterations')
-    plt.ylabel('Loss')
-    plt.title('Loss')
-    plt.ylim(0, 13)
-    plt.show()
-
-
+    if arg.distributed_training:
+        multi_gpu_training(arg)
+    else:
+        single_gpu_training(arg)

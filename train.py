@@ -118,6 +118,11 @@ def train_fn(rank, world_size, arg):
 
         dist.barrier() # wait for all processes to finish the current epoch
 
+        if rank == 0:
+            if not os.path.exists(os.path.dirname(arg.model_save_path)):
+                os.makedirs(os.path.dirname(arg.model_save_path), exist_ok=True)
+            torch.save(model.state_dict(), arg.model_save_path)
+
     dist.destroy_process_group() # clean up
 
 

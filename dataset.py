@@ -90,6 +90,9 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
         if state.timestep < current_timestep:
             focal_past.append(normalizer([state.position[0], state.position[1]]))
 
+    if len(labels) == 0:
+        labels = [focal_past[-1]]
+
     mapping.update(
         dict(
             cent_x=cent_x,
@@ -277,7 +280,7 @@ def argoverse2_get_instance(instance_dir, hidden_size=128, future_frame_num=60, 
         dict(
             matrix=np.array(vectors),
             focal_past=np.array(focal_past),
-            labels=np.array(labels).reshape([future_frame_num, 2]),
+            labels=np.array(labels).reshape([max(future_frame_num,1), 2]),
             polyline_spans=[slice(each[0], each[1]) for each in polyline_spans],
             agents=agents,
             map_start_polyline_idx=map_start_polyline_idx,

@@ -47,7 +47,7 @@ class Decoder(nn.Module):
 
         self.goals_2D_cross_attention = CrossAttention(hidden_size=hidden_size, attention_head_size=goal_head_size, num_attention_heads=goal_head_num) 
         self.goals_2D_point_sub_graph = PointSubGraph(hidden_size) # fuse goal feature and agent feature when encoding goals
-        self.dense_goal_loss = nn.CrossEntropyLoss()
+        # self.dense_goal_loss = nn.CrossEntropyLoss()
 
         self.pool = mp.Pool(processes=num_workers)
 
@@ -80,23 +80,16 @@ class Decoder(nn.Module):
             dense_goal_scores_lst.append(dense_goal_scores)
             dense_goals_lst.append(dense_goals)
 
-        # import time
-        # start = time.time()
-        dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
-        # print('\nTime Soft:', time.time() - start)
-        # start = time.time()
-        # dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets_one_hot, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
-        # print('\nTime One Hot:', time.time() - start)
-
         # compute dense_goal_loss
         if self.training:
             for i in range(batch_size):
-                loss[i] += self.dense_goal_loss(
-                    F.softmax(dense_goal_scores_lst[i], dim=-1), 
-                    F.softmax(dense_goal_targets_lst[i].to(device), dim=-1)
+                loss[i] += utils.square_square_energy_loss(
+                    dense_goals_lst[i],
+                    F.softplus(dense_goal_scores_lst[i]), 
+                    mapping[i]
                 )
 
-        dense_goal_scores_numpy = [F.softmax(dense_goal_scores, dim=-1).detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
+        dense_goal_scores_numpy = [F.softplus(dense_goal_scores).detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
         return loss.mean(), dense_goal_scores_numpy, dense_goals_lst
 
     """

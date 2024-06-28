@@ -246,12 +246,16 @@ def construct_reference_path(labels, reference_path, point_label, future_frame_n
     i = max(0, i-1)
     traj_segment = labels[-1-i:]
     
-    traj_direction = get_unit_vector(labels[-1], labels[-future_frame_num//3]) # direction of the trajectory
+    has_traj = True
+    try:
+        traj_direction = get_unit_vector(labels[-1], labels[-future_frame_num//3]) # direction of the trajectory
+    except:
+        has_traj = False
 
     start_dist = np.linalg.norm(reference_path[closest_point_idx] - reference_path[0])
     end_dist = np.linalg.norm(reference_path[closest_point_idx] - reference_path[-1])
 
-    if not (start_dist <= 1e-7 and end_dist <= 1e-7):
+    if has_traj and not (start_dist <= 1e-7 and end_dist <= 1e-7):
         # When the target is close to the start of the reference path
         if start_dist <= 1e-7:
             end_direction = get_unit_vector(reference_path[closest_point_idx], reference_path[-1])
@@ -441,14 +445,14 @@ class RandomSampler(torch.utils.data.Sampler):
 Given the dense goals and the map information, compute the APF and convert to softmax scores.
 We compute the attraction of the ground truth goal and the reference path to each candidate.
 """
-def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0, K1=1.0, K2=2.0):
+def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0, K1=1.0, K2=2.0, thres=15.0):
     ground_truth_goal = mapping['labels'][-1]
     dense_goal_targets = torch.zeros(len(dense_goals), dtype=torch.float)
     compute_traj = mapping['quadratic_path'] is not None
 
     for i, goal in enumerate(dense_goals):
         goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
-        if goal_dist <= 15:
+        if goal_dist <= thres:
             # Compute goal and reference path attraction
             if compute_traj:
                 _, point_hat = inv_proj(goal, mapping['quadratic_path'])
@@ -460,6 +464,36 @@ def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0,
             dense_goal_targets[i] = -1e9 / T
 
     return dense_goal_targets
+
+
+def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=5):
+    ground_truth_goal = mapping['labels'][-1]
+    compute_traj = mapping['quadratic_path'] is not None
+
+    target_energy = dense_goal_scores[np.argmin(get_dis_batch(dense_goals, ground_truth_goal))]
+
+    mo_idx, mo_dist = None, float('inf') # index and distance of the most offensive target
+
+    for i, goal in enumerate(dense_goals):
+        goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
+        if goal_dist <= 10:
+            # Compute goal and reference path attraction
+            if compute_traj:
+                _, point_hat = inv_proj(goal, mapping['quadratic_path'])
+                traj_dist = get_dis_p2p(goal, point_hat).item()
+            else:
+                traj_dist = 0.0
+            dist = goal_dist + 2 * traj_dist
+            if dist < mo_dist and dist >= m:
+                mo_dist = dist
+                mo_idx = i
+
+    if mo_idx is not None:
+        most_offsensive_target_energy = dense_goal_scores[mo_idx]
+    else:
+        most_offsensive_target_energy = 0.0
+
+    return target_energy ** 2 + max(0, m - most_offsensive_target_energy) ** 2
 
 
 def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict]):
@@ -539,11 +573,13 @@ if __name__ == '__main__':
     warnings.showwarning = warn_with_traceback
 
     arg = argparse.ArgumentParser()
-    arg.add_argument('--dir', type=str, default='02b79459-8195-4715-8541-3657915e6245')
+    arg.add_argument('--dir', type=str, default='cf258518-09ca-44c2-9c24-3d3a7c8ca27a')
     arg = arg.parse_args()
     
-    mapping = [argoverse2_get_instance('./data/train/' + arg.dir + '/')]
-    model = EncoderDecoder().to(0)
+    from torch.nn.parallel import DataParallel as DP
+
+    mapping = [argoverse2_get_instance('./data/test/' + arg.dir + '/', future_frame_num=0, current_timestep=50)]
+    model = DP(EncoderDecoder(), device_ids=[0])
     model.load_state_dict(torch.load('./models/model.pt', map_location='cpu'))
 
     sparse_goals = mapping[0]['goals_2D']

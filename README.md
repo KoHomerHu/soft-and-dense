@@ -4,7 +4,7 @@ This code is modified from the official implementation of [DenseTNT](https://git
 
 ## Soft Labels for Dense Goals
 
-Inspired by the artificial potential field (APF) approach for path planning, for each goal candidate, we compute the target attraction and reference path attraction based on their distance to the goal candidate. A softmax function is applied to the sum of these "attractive forces" to serve as a soft label for dense goal classification (or retrieval).
+Inspired by the artificial potential field (APF) approach for path planning, for each goal candidate, we compute the target attraction and reference path attraction based on their distance to the goal candidate. Based on this attraction, we select the correct target (with the largest attraction) and the most offensive target (the target with the highest energy and attraction less than a certain threshold), and compute the square-square loss.
 
 **Remark.** The reference path is a polyline crossing through the target and looking similar to the centerline of the closest lane. The distance from a goal candidate to a reference path is computed by the minimum distance from the candidate to a point on the path. By considering attractions from this reference path, we implicitly incorporate the prior knowledge that as long as the model predicts a goal with a similar intention, the trajectory decoder (e.g. Frenet-based) would achieve similar results. In practice, we replace part of the centerline with the ground truth future trajectory, and we use a quadratic curve to fit the reference path:
 <p align="center">

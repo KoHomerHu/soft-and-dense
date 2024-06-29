@@ -466,17 +466,20 @@ def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0,
     return dense_goal_targets
 
 
-def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=5):
+"""
+Taken out of square_square_energy_loss to be used for multiprocessing (deprecated).
+"""
+def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=10):
     ground_truth_goal = mapping['labels'][-1]
     compute_traj = mapping['quadratic_path'] is not None
 
-    target_energy = dense_goal_scores[np.argmin(get_dis_batch(dense_goals, ground_truth_goal))]
+    target_energy_idx = np.argmin(get_dis_batch(dense_goals, ground_truth_goal))
 
-    mo_idx, mo_dist = None, float('inf') # index and distance of the most offensive target
+    mo_idx, mo_score = None, float('inf') # index and distance of the most offensive target
 
     for i, goal in enumerate(dense_goals):
         goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
-        if goal_dist <= 10:
+        if goal_dist <= m + 0.5:
             # Compute goal and reference path attraction
             if compute_traj:
                 _, point_hat = inv_proj(goal, mapping['quadratic_path'])
@@ -484,16 +487,21 @@ def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=5):
             else:
                 traj_dist = 0.0
             dist = goal_dist + 2 * traj_dist
-            if dist < mo_dist and dist >= m:
-                mo_dist = dist
+            score = dense_goal_scores[i].item()
+            if dist >= m and score < mo_score:
+                mo_score = score
                 mo_idx = i
 
-    if mo_idx is not None:
-        most_offsensive_target_energy = dense_goal_scores[mo_idx]
-    else:
-        most_offsensive_target_energy = 0.0
+    return target_energy_idx, mo_idx
 
-    return target_energy ** 2 + max(0, m - most_offsensive_target_energy) ** 2
+
+def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=10):
+    target_energy_idx, mo_idx = get_sse_prep(dense_goals, dense_goal_scores, mapping, m)
+
+    target_energy = dense_goal_scores[target_energy_idx]
+    mo_target_energy = dense_goal_scores[mo_idx] if mo_idx is not None else 0.0
+
+    return target_energy ** 2 + max(0, m - mo_target_energy) ** 2
 
 
 def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict]):

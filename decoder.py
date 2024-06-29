@@ -64,8 +64,6 @@ class Decoder(nn.Module):
     """
     def forward(self, mapping: List[Dict], batch_size, lane_states_batch: List[Tensor], 
                 inputs: Tensor, inputs_lengths: List[int], hidden_states: Tensor, device):
-        # labels = utils.get_from_mapping(mapping, 'labels')
-        # labels_is_valid = utils.get_from_mapping(mapping, 'labels_is_valid')
         loss = torch.zeros(batch_size, device=device)
 
         dense_goal_scores_lst, dense_goals_lst = [], []
@@ -85,11 +83,11 @@ class Decoder(nn.Module):
             for i in range(batch_size):
                 loss[i] += utils.square_square_energy_loss(
                     dense_goals_lst[i],
-                    F.softplus(dense_goal_scores_lst[i]), 
+                    dense_goal_scores_lst[i], 
                     mapping[i]
                 )
 
-        dense_goal_scores_numpy = [F.softplus(dense_goal_scores).detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
+        dense_goal_scores_numpy = [dense_goal_scores.detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
         return loss.mean(), dense_goal_scores_numpy, dense_goals_lst
 
     """
@@ -166,7 +164,7 @@ class Decoder(nn.Module):
             goals_2D_hidden_attention_with_lane
         ]
         scores = self.goals_2D_decoder(torch.cat(li, dim=-1)).squeeze(-1)
-        # scores = F.softmax(scores, dim=-1)
+        scores = F.softplus(scores)
 
         return scores
     
@@ -175,10 +173,9 @@ class Decoder(nn.Module):
     """
     def get_dense_goal_scores(self, i, sparse_goals, mapping, device, scores, get_scores_inputs, k=150):
         # Sample dense goals from top K sparse goals.
-        _, topk_ids = torch.topk(scores, k=min(k, len(scores)))
+        _, topk_ids = torch.topk(-scores, k=min(k, len(scores))) # energies for top choice of goals are small
         dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=2)
         dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
-        # dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
         # include the sparse goals
         dense_goals = torch.cat(
             [

@@ -467,9 +467,9 @@ def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0,
 
 
 """
-Taken out of square_square_energy_loss to be used for multiprocessing (deprecated).
+Taken out of square_square_energy_loss to be used for multiprocessing.
 """
-def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=10):
+def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=5.0):
     ground_truth_goal = mapping['labels'][-1]
     compute_traj = mapping['quadratic_path'] is not None
 
@@ -479,29 +479,36 @@ def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=10):
 
     for i, goal in enumerate(dense_goals):
         goal_dist = get_dis_p2p(goal, ground_truth_goal) # distance between the goal and the ground truth goal
-        if goal_dist <= m + 0.5:
+        score = dense_goal_scores[i].item()
+        if score < min(mo_score, m):
             # Compute goal and reference path attraction
             if compute_traj:
                 _, point_hat = inv_proj(goal, mapping['quadratic_path'])
                 traj_dist = get_dis_p2p(goal, point_hat).item()
             else:
                 traj_dist = 0.0
-            dist = goal_dist + 2 * traj_dist
-            score = dense_goal_scores[i].item()
-            if dist >= m and score < mo_score:
+            dist = goal_dist + traj_dist
+            if dist >= m:
                 mo_score = score
                 mo_idx = i
 
     return target_energy_idx, mo_idx
 
 
-def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=10):
-    target_energy_idx, mo_idx = get_sse_prep(dense_goals, dense_goal_scores, mapping, m)
-
+def square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m=5.0):
     target_energy = dense_goal_scores[target_energy_idx]
-    mo_target_energy = dense_goal_scores[mo_idx] if mo_idx is not None else 0.0
 
-    return target_energy ** 2 + max(0, m - mo_target_energy) ** 2
+    if mo_idx is not None:
+        mo_target_energy = dense_goal_scores[mo_idx]
+        if mo_target_energy < m:
+            return target_energy ** 2 + (m - mo_target_energy) ** 2
+    
+    return target_energy ** 2
+
+
+def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=5.0):
+    target_energy_idx, mo_idx = get_sse_prep(dense_goals, dense_goal_scores, mapping, m)
+    return square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m)
 
 
 def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict]):
@@ -511,7 +518,7 @@ def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict])
     return dense_goal_targets_one_hot
 
 
-def visualize_heatmap(scores, dense_goals, mapping):
+def visualize_heatmap(scores, dense_goals, mapping, star_lst=[]):
     import matplotlib.pyplot as plt
 
     lane_lines = mapping['polygons']
@@ -531,6 +538,10 @@ def visualize_heatmap(scores, dense_goals, mapping):
     plt.plot(past[:, 0], past[:, 1], 'g-')
     plt.plot(future[:, 0], future[:, 1], 'r-')
     plt.scatter(future[-1, 0], future[-1, 1], color='r', marker='*', s=50)
+
+    if len(star_lst) == 2:
+        plt.scatter(star_lst[0][0], star_lst[0][1], color='b', marker='*', s=50)
+        plt.scatter(star_lst[1][0], star_lst[1][1], color='y', marker='*', s=50)
 
     # reference_path = mapping['reference_path']
     # plt.plot(reference_path[:, 0], reference_path[:, 1], 'b-', linewidth=2)
@@ -582,13 +593,17 @@ if __name__ == '__main__':
 
     arg = argparse.ArgumentParser()
     arg.add_argument('--dir', type=str, default='cf258518-09ca-44c2-9c24-3d3a7c8ca27a')
+    arg.add_argument('--valid', action='store_true')
     arg = arg.parse_args()
     
     from torch.nn.parallel import DataParallel as DP
 
-    mapping = [argoverse2_get_instance('./data/test/' + arg.dir + '/', future_frame_num=0, current_timestep=50)]
+    if arg.valid:
+        mapping = [argoverse2_get_instance('./data/train/' + arg.dir + '/')]
+    else:
+        mapping = [argoverse2_get_instance('./data/test/' + arg.dir + '/', future_frame_num=0, current_timestep=50)]
     model = DP(EncoderDecoder(), device_ids=[0])
-    model.load_state_dict(torch.load('./models/model.pt', map_location='cpu'))
+    model.load_state_dict(torch.load('./models/model (3).pt', map_location='cpu'))
 
     sparse_goals = mapping[0]['goals_2D']
     gt_target = mapping[0]['labels'][-1]
@@ -606,6 +621,7 @@ if __name__ == '__main__':
     loss, scores_lst, dense_goals_lst = model(mapping, 0)
     scores = scores_lst[0]
     dense_goals  = dense_goals_lst[0]
+    target_idx, mo_idx = get_sse_prep(dense_goals, scores, mapping[0])
     # print(scores.max().item(), scores.min().item())
     # print(scores.sum())
     # print(loss.item())
@@ -613,7 +629,10 @@ if __name__ == '__main__':
     plt.show()
     N_scores = (scores - scores.min()) / (scores.max() - scores.min()) # normalize scores
 
-    visualize_heatmap(N_scores, dense_goals, mapping[0])
+    print("Most offensive target: ", dense_goals[mo_idx])
+    print("Most offensive target energy: ", scores[mo_idx].item())
+
+    visualize_heatmap(-N_scores, dense_goals, mapping[0], star_lst = [dense_goals[target_idx], dense_goals[mo_idx]])
 
     # print(dense_goals_org.shape)
     target_scores = get_dense_goal_targets(dense_goals_org, mapping[0])

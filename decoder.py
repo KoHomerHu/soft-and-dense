@@ -1,5 +1,4 @@
 from typing import Dict, List
-
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -78,13 +77,14 @@ class Decoder(nn.Module):
             dense_goal_scores_lst.append(dense_goal_scores)
             dense_goals_lst.append(dense_goals)
 
+        sse_prep = self.pool.starmap(utils.get_sse_prep, [(np.copy(dense_goals_lst[i]), dense_goal_scores_lst[i].clone().detach().cpu().numpy(), mapping[i]) for i in range(batch_size)])
+
         # compute dense_goal_loss
         if self.training:
             for i in range(batch_size):
-                loss[i] += utils.square_square_energy_loss(
-                    dense_goals_lst[i],
-                    dense_goal_scores_lst[i], 
-                    mapping[i]
+                target_energy_idx, mo_idx = sse_prep[i]
+                loss[i] += utils.square_square_energy_loss_from_prep(
+                    dense_goal_scores_lst[i], target_energy_idx, mo_idx
                 )
 
         dense_goal_scores_numpy = [dense_goal_scores.detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]

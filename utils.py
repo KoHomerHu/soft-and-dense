@@ -469,7 +469,7 @@ def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0,
 """
 Taken out of square_square_energy_loss to be used for multiprocessing.
 """
-def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=5.0):
+def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=15.0, eps=5.0):
     ground_truth_goal = mapping['labels'][-1]
     compute_traj = mapping['quadratic_path'] is not None
 
@@ -488,14 +488,14 @@ def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=5.0):
             else:
                 traj_dist = 0.0
             dist = goal_dist + traj_dist
-            if dist >= m:
+            if dist >= eps:
                 mo_score = score
                 mo_idx = i
 
     return target_energy_idx, mo_idx
 
 
-def square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m=5.0):
+def square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m=15.0, eps=5.0):
     target_energy = dense_goal_scores[target_energy_idx]
 
     if mo_idx is not None:
@@ -506,8 +506,8 @@ def square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo
     return target_energy ** 2
 
 
-def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=5.0):
-    target_energy_idx, mo_idx = get_sse_prep(dense_goals, dense_goal_scores, mapping, m)
+def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=15.0, eps=5.0):
+    target_energy_idx, mo_idx = get_sse_prep(dense_goals, dense_goal_scores, mapping, m=m, eps=eps)
     return square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m)
 
 

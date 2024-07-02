@@ -1,6 +1,7 @@
 from typing import Dict, List, Tuple
 from scipy.optimize import minimize
 from torch import Tensor
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 import torch
 import math
@@ -469,7 +470,7 @@ def get_dense_goal_targets(dense_goals: np.ndarray, mapping: List[Dict], T=50.0,
 """
 Taken out of square_square_energy_loss to be used for multiprocessing.
 """
-def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=15.0, eps=5.0):
+def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=10.0, eps=10.0):
     ground_truth_goal = mapping['labels'][-1]
     compute_traj = mapping['quadratic_path'] is not None
 
@@ -495,18 +496,23 @@ def get_sse_prep(dense_goals, dense_goal_scores, mapping, m=15.0, eps=5.0):
     return target_energy_idx, mo_idx
 
 
-def square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m=15.0, eps=5.0):
+def square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m=10.0, eps=10.0):
     target_energy = dense_goal_scores[target_energy_idx]
+    margin = torch.tensor(m, dtype=dense_goal_scores.dtype, device=dense_goal_scores.device)
 
+    loss = target_energy ** 2
+    
     if mo_idx is not None:
         mo_target_energy = dense_goal_scores[mo_idx]
         if mo_target_energy < m:
-            return target_energy ** 2 + (m - mo_target_energy) ** 2
+            # print("\n", "target_energy: ", target_energy, "\n mo_target_energy: ", mo_target_energy, "\n")
+            loss += (margin - mo_target_energy) ** 2
+        # loss += F.sigmoid(target_energy - mo_target_energy)
     
-    return target_energy ** 2
+    return loss
 
 
-def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=15.0, eps=5.0):
+def square_square_energy_loss(dense_goals, dense_goal_scores, mapping, m=10.0, eps=1-.0):
     target_energy_idx, mo_idx = get_sse_prep(dense_goals, dense_goal_scores, mapping, m=m, eps=eps)
     return square_square_energy_loss_from_prep(dense_goal_scores, target_energy_idx, mo_idx, m)
 
@@ -518,7 +524,117 @@ def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict])
     return dense_goal_targets_one_hot
 
 
-def visualize_heatmap(scores, dense_goals, mapping, star_lst=[]):
+def get_optimal_targets_dense_tnt(scores, goals):
+    def get_expectation(ans_points):
+        expectation = float('inf')
+        for i in range(6):
+            dist = get_dis_batch(goals, ans_points[i])
+            expectation = min((scores * dist).sum(), expectation)
+        return expectation
+
+    ans_points = np.zeros((6, 2), dtype=np.float32)
+    next_points = np.zeros((6, 2), dtype=np.float32)
+    best_expectation = float('inf')
+    best_points = np.zeros((6, 2), dtype=np.float32)
+
+    runtime = 8
+    num_step = 10000
+
+    for i in range(6):
+        t_int = np.random.randint(0, len(goals))
+        ans_points[i, 0] = goals[t_int, 0]
+        ans_points[i, 1] = goals[t_int, 1]
+
+    expectation = get_expectation(ans_points)
+
+    for _ in range(runtime):
+        for step in range(num_step):
+            next_points = np.copy(ans_points)
+
+            # Random perturbation
+            lr = 0.5
+            for i in range(6):
+                if np.random.random() < 0.7:
+                    next_points[i, 0] += np.random.uniform(-lr, lr)
+                    next_points[i, 1] += np.random.uniform(-lr, lr)
+                    if np.min(get_dis_batch(goals, next_points[i])) > 0.0:
+                        t_int = np.random.randint(0, len(goals))
+                        next_points[i] = goals[t_int]
+
+
+            next_expectation = get_expectation(next_points)
+
+            # print("step: ", step, "expectation: ", expectation, "next_expectation: ", next_expectation, "best_expectation: ", best_expectation)
+            update = next_expectation < expectation or np.random.random() < 0.01
+            if update:
+                expectation = next_expectation
+                ans_points = np.copy(next_points)
+
+            if expectation < best_expectation:
+                best_expectation = expectation
+                best_points = np.copy(ans_points)
+
+    return best_points
+
+
+def get_optimal_targets_home_MR(scores, goals, R=2.0):
+    ans_points = np.zeros((6, 2), dtype=np.float32)
+
+    for i in range(6):
+        best_center, best_score, filter_idx = None, -float('inf'), None
+        for goal in goals:
+            dist = get_dis_batch(goals, goal)
+            integral = scores[dist < R].sum()
+            if integral > best_score:
+                best_score = integral
+                best_center = goal
+                filter_idx = (dist < R).copy()
+        ans_points[i] = best_center
+        scores[filter_idx] = 0.0
+
+    return ans_points
+
+
+def get_optimal_targets_home_FDE(scores, goals, centroids, L=4, R=3.0):
+    for _ in range(L):
+        # Compute d_i^k the matrix of distance of point x_i to each centroid c_k
+        dist = np.zeros([len(goals), 6])
+        for i in range(len(goals)):
+            for k in range(6):
+                dist[i, k] = get_dis_p2p(goals[i], centroids[k])
+
+        m = np.min(dist, axis=1) # the distance of poitn x_i to the closest centroid c_k
+
+        # Compute new centroid coordinates
+        for k in range(6):
+            idx = np.where(dist[:, k] <= R)[0]
+            weights = scores[idx] * (m[idx] + 1e-7) / (dist[idx, k] ** 2 + 1e-7)
+            centroids[k] = np.sum(goals[idx] * weights[:, None], axis=0) / np.sum(weights)
+
+    return centroids
+
+
+def get_optimal_targets_home(scores, goals):
+    centroids = get_optimal_targets_home_MR(np.copy(scores), goals) # initial centroids with MR optimization
+    ans_points = get_optimal_targets_home_FDE(scores, goals, centroids) # FDE optimization
+    return ans_points
+
+
+def select_goals_by_optimization(scores, goals, mapping, T=20.0):
+    ans_points = np.zeros([len(scores), 6, 2])
+
+    for i in range(len(scores)):
+        probs = np.exp(-scores[i] / T) / sum(np.exp(-scores[i] / T))
+        ans_points[i] = get_optimal_targets_home(probs, goals[i])
+
+    min_FDE = np.zeros(len(scores))
+    for i in range(len(scores)):
+        min_FDE[i] = np.min(get_dis_batch(ans_points[i], mapping[i]['labels'][-1]))
+
+    return ans_points, min_FDE
+
+
+def visualize_heatmap(scores, dense_goals, mapping, star_lst=[], pred=None):
     import matplotlib.pyplot as plt
 
     lane_lines = mapping['polygons']
@@ -539,15 +655,19 @@ def visualize_heatmap(scores, dense_goals, mapping, star_lst=[]):
     plt.plot(future[:, 0], future[:, 1], 'r-')
     plt.scatter(future[-1, 0], future[-1, 1], color='r', marker='*', s=50)
 
-    if len(star_lst) == 2:
+    if pred is not None:
+        plt.scatter(pred[:, 0], pred[:, 1], color='y', marker='*', s=50)
+
+    if False and len(star_lst) == 2:
         plt.scatter(star_lst[0][0], star_lst[0][1], color='b', marker='*', s=50)
-        plt.scatter(star_lst[1][0], star_lst[1][1], color='y', marker='*', s=50)
+        if star_lst[1] is not None:
+            plt.scatter(star_lst[1][0], star_lst[1][1], color='y', marker='*', s=50)
 
     # reference_path = mapping['reference_path']
     # plt.plot(reference_path[:, 0], reference_path[:, 1], 'b-', linewidth=2)
 
     coeff = mapping['quadratic_path']
-    if coeff is not None:
+    if False and coeff is not None:
         print(coeff)
         a_2, a_1, a_0 = coeff["a_2"], coeff["a_1"], coeff["a_0"]
         b_2, b_1, b_0 = coeff["b_2"], coeff["b_1"], coeff["b_0"]
@@ -603,7 +723,7 @@ if __name__ == '__main__':
     else:
         mapping = [argoverse2_get_instance('./data/test/' + arg.dir + '/', future_frame_num=0, current_timestep=50)]
     model = DP(EncoderDecoder(), device_ids=[0])
-    model.load_state_dict(torch.load('./models/model (3).pt', map_location='cpu'))
+    model.load_state_dict(torch.load('./models/model.pt', map_location='cpu'))
 
     sparse_goals = mapping[0]['goals_2D']
     gt_target = mapping[0]['labels'][-1]
@@ -619,20 +739,44 @@ if __name__ == '__main__':
     dense_goals_org = np.array(dense_goals)
 
     loss, scores_lst, dense_goals_lst = model(mapping, 0)
+    # scores = F.softplus(torch.tensor(scores_lst[0])).numpy()
     scores = scores_lst[0]
     dense_goals  = dense_goals_lst[0]
+
+    # Filter out scores and dense_goals that have scores above 100
+    mask = scores <= 40
+    scores = scores[mask]
+    dense_goals = dense_goals[mask]
+
+    T = 20.0 # temperature parameter
+    answers = select_goals_by_optimization([scores,], [dense_goals,], mapping, T)
+
+    answer_points, fde = answers
+
+    print("FDE: ", fde)
+    print("Answer points: ", answer_points)
+
+    # Continue with the rest of the code
+    # ...
+
     target_idx, mo_idx = get_sse_prep(dense_goals, scores, mapping[0])
     # print(scores.max().item(), scores.min().item())
     # print(scores.sum())
     # print(loss.item())
     plt.plot(scores)
     plt.show()
+    probs = np.exp(-scores / T) / sum(np.exp(-scores / T))
+    plt.plot(probs)
+    plt.show()
     N_scores = (scores - scores.min()) / (scores.max() - scores.min()) # normalize scores
 
-    print("Most offensive target: ", dense_goals[mo_idx])
-    print("Most offensive target energy: ", scores[mo_idx].item())
+    print("Target: ", dense_goals[target_idx])
+    print("Target energy: ", scores[target_idx].item())
+    if mo_idx is not None:
+        print("Most offensive target: ", dense_goals[mo_idx])
+        print("Most offensive target energy: ", scores[mo_idx].item())
 
-    visualize_heatmap(-N_scores, dense_goals, mapping[0], star_lst = [dense_goals[target_idx], dense_goals[mo_idx]])
+    visualize_heatmap(probs, dense_goals, mapping[0], star_lst = [dense_goals[target_idx], dense_goals[mo_idx] if mo_idx is not None else None], pred=answer_points[0])
 
     # print(dense_goals_org.shape)
     target_scores = get_dense_goal_targets(dense_goals_org, mapping[0])

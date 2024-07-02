@@ -1,5 +1,4 @@
 from typing import Dict, List
-
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -26,10 +25,12 @@ class DecoderResCat(nn.Module):
     def __init__(self, hidden_size, in_features, out_features=60):
         super(DecoderResCat, self).__init__()
         self.mlp = MLP(in_features, hidden_size)
-        self.fc = nn.Linear(hidden_size + in_features, out_features)
+        self.mlp2 = MLP(hidden_size + in_features, (hidden_size + in_features))
+        self.fc = nn.Linear((hidden_size + in_features), out_features)
 
     def forward(self, hidden_states):
         hidden_states = torch.cat([hidden_states, self.mlp(hidden_states)], dim=-1)
+        hidden_states = self.mlp2(hidden_states)
         hidden_states = self.fc(hidden_states)
         return hidden_states
 
@@ -47,7 +48,7 @@ class Decoder(nn.Module):
 
         self.goals_2D_cross_attention = CrossAttention(hidden_size=hidden_size, attention_head_size=goal_head_size, num_attention_heads=goal_head_num) 
         self.goals_2D_point_sub_graph = PointSubGraph(hidden_size) # fuse goal feature and agent feature when encoding goals
-        self.dense_goal_loss = nn.CrossEntropyLoss()
+        # self.dense_goal_loss = nn.CrossEntropyLoss()
 
         self.pool = mp.Pool(processes=num_workers)
 
@@ -64,8 +65,6 @@ class Decoder(nn.Module):
     """
     def forward(self, mapping: List[Dict], batch_size, lane_states_batch: List[Tensor], 
                 inputs: Tensor, inputs_lengths: List[int], hidden_states: Tensor, device):
-        # labels = utils.get_from_mapping(mapping, 'labels')
-        # labels_is_valid = utils.get_from_mapping(mapping, 'labels_is_valid')
         loss = torch.zeros(batch_size, device=device)
 
         dense_goal_scores_lst, dense_goals_lst = [], []
@@ -80,23 +79,26 @@ class Decoder(nn.Module):
             dense_goal_scores_lst.append(dense_goal_scores)
             dense_goals_lst.append(dense_goals)
 
-        # import time
-        # start = time.time()
-        dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
-        # print('\nTime Soft:', time.time() - start)
-        # start = time.time()
-        # dense_goal_targets_lst = self.pool.starmap(utils.get_dense_goal_targets_one_hot, [(dense_goals_lst[i], mapping[i]) for i in range(batch_size)])
-        # print('\nTime One Hot:', time.time() - start)
+        sse_prep = self.pool.starmap(
+            utils.get_sse_prep, 
+            [
+                (
+                    np.copy(dense_goals_lst[i]), 
+                    dense_goal_scores_lst[i].clone().detach().cpu().numpy(), 
+                    mapping[i]
+                ) for i in range(batch_size)
+            ]
+        )
 
         # compute dense_goal_loss
         if self.training:
             for i in range(batch_size):
-                loss[i] += self.dense_goal_loss(
-                    F.softmax(dense_goal_scores_lst[i], dim=-1), 
-                    F.softmax(dense_goal_targets_lst[i].to(device), dim=-1)
+                target_energy_idx, mo_idx = sse_prep[i]
+                loss[i] += utils.square_square_energy_loss_from_prep(
+                    dense_goal_scores_lst[i], target_energy_idx, mo_idx
                 )
 
-        dense_goal_scores_numpy = [F.softmax(dense_goal_scores, dim=-1).detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
+        dense_goal_scores_numpy = [dense_goal_scores.clone().detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
         return loss.mean(), dense_goal_scores_numpy, dense_goals_lst
 
     """
@@ -173,7 +175,7 @@ class Decoder(nn.Module):
             goals_2D_hidden_attention_with_lane
         ]
         scores = self.goals_2D_decoder(torch.cat(li, dim=-1)).squeeze(-1)
-        # scores = F.softmax(scores, dim=-1)
+        # scores = F.softplus(scores)
 
         return scores
     
@@ -182,10 +184,9 @@ class Decoder(nn.Module):
     """
     def get_dense_goal_scores(self, i, sparse_goals, mapping, device, scores, get_scores_inputs, k=150):
         # Sample dense goals from top K sparse goals.
-        _, topk_ids = torch.topk(scores, k=min(k, len(scores)))
+        _, topk_ids = torch.topk(-scores, k=min(k, len(scores))) # energies for top choice of goals are small
         dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=2)
         dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
-        # dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
         # include the sparse goals
         dense_goals = torch.cat(
             [

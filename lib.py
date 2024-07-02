@@ -30,12 +30,12 @@ class MLP(nn.Module):
         if out_features is None:
             out_features = hidden_size
         self.linear = nn.Linear(hidden_size, out_features)
-        self.layer_norm = LayerNorm(out_features)
+        # self.layer_norm = LayerNorm(out_features)
 
     def forward(self, hidden_states):
         hidden_states = self.linear(hidden_states)
-        hidden_states = self.layer_norm(hidden_states)
-        hidden_states = torch.nn.functional.relu(hidden_states)
+        # hidden_states = self.layer_norm(hidden_states)
+        hidden_states = torch.nn.functional.leaky_relu(hidden_states)
         return hidden_states
 
 

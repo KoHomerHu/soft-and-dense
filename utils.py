@@ -524,63 +524,18 @@ def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict])
     return dense_goal_targets_one_hot
 
 
-def get_optimal_targets_dense_tnt(scores, goals):
-    def get_expectation(ans_points):
-        expectation = float('inf')
-        for i in range(6):
-            dist = get_dis_batch(goals, ans_points[i])
-            expectation = min((scores * dist).sum(), expectation)
-        return expectation
-
-    ans_points = np.zeros((6, 2), dtype=np.float32)
-    next_points = np.zeros((6, 2), dtype=np.float32)
-    best_expectation = float('inf')
-    best_points = np.zeros((6, 2), dtype=np.float32)
-
-    runtime = 8
-    num_step = 10000
-
-    for i in range(6):
-        t_int = np.random.randint(0, len(goals))
-        ans_points[i, 0] = goals[t_int, 0]
-        ans_points[i, 1] = goals[t_int, 1]
-
-    expectation = get_expectation(ans_points)
-
-    for _ in range(runtime):
-        for step in range(num_step):
-            next_points = np.copy(ans_points)
-
-            # Random perturbation
-            lr = 0.5
-            for i in range(6):
-                if np.random.random() < 0.7:
-                    next_points[i, 0] += np.random.uniform(-lr, lr)
-                    next_points[i, 1] += np.random.uniform(-lr, lr)
-                    if np.min(get_dis_batch(goals, next_points[i])) > 0.0:
-                        t_int = np.random.randint(0, len(goals))
-                        next_points[i] = goals[t_int]
-
-
-            next_expectation = get_expectation(next_points)
-
-            # print("step: ", step, "expectation: ", expectation, "next_expectation: ", next_expectation, "best_expectation: ", best_expectation)
-            update = next_expectation < expectation or np.random.random() < 0.01
-            if update:
-                expectation = next_expectation
-                ans_points = np.copy(next_points)
-
-            if expectation < best_expectation:
-                best_expectation = expectation
-                best_points = np.copy(ans_points)
-
-    return best_points
-
-
 def get_optimal_targets_home_MR(scores, goals, R=2.0):
     ans_points = np.zeros((6, 2), dtype=np.float32)
 
-    for i in range(6):
+    start_with_min = True # need to tune
+    init_id = 0
+    if start_with_min:
+        ans_points[0] = goals[np.argmax(scores)]
+        dist = get_dis_batch(goals, ans_points[0])
+        scores[dist < R] = 0.0
+        init_id = 1
+
+    for i in range(init_id, 6):
         best_center, best_score, filter_idx = None, -float('inf'), None
         for goal in goals:
             dist = get_dis_batch(goals, goal)

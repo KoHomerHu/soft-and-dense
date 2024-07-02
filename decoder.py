@@ -25,10 +25,12 @@ class DecoderResCat(nn.Module):
     def __init__(self, hidden_size, in_features, out_features=60):
         super(DecoderResCat, self).__init__()
         self.mlp = MLP(in_features, hidden_size)
-        self.fc = nn.Linear(hidden_size + in_features, out_features)
+        self.mlp2 = MLP(hidden_size + in_features, (hidden_size + in_features))
+        self.fc = nn.Linear((hidden_size + in_features), out_features)
 
     def forward(self, hidden_states):
         hidden_states = torch.cat([hidden_states, self.mlp(hidden_states)], dim=-1)
+        hidden_states = self.mlp2(hidden_states)
         hidden_states = self.fc(hidden_states)
         return hidden_states
 
@@ -77,7 +79,16 @@ class Decoder(nn.Module):
             dense_goal_scores_lst.append(dense_goal_scores)
             dense_goals_lst.append(dense_goals)
 
-        sse_prep = self.pool.starmap(utils.get_sse_prep, [(np.copy(dense_goals_lst[i]), dense_goal_scores_lst[i].clone().detach().cpu().numpy(), mapping[i]) for i in range(batch_size)])
+        sse_prep = self.pool.starmap(
+            utils.get_sse_prep, 
+            [
+                (
+                    np.copy(dense_goals_lst[i]), 
+                    dense_goal_scores_lst[i].clone().detach().cpu().numpy(), 
+                    mapping[i]
+                ) for i in range(batch_size)
+            ]
+        )
 
         # compute dense_goal_loss
         if self.training:
@@ -87,7 +98,7 @@ class Decoder(nn.Module):
                     dense_goal_scores_lst[i], target_energy_idx, mo_idx
                 )
 
-        dense_goal_scores_numpy = [dense_goal_scores.detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
+        dense_goal_scores_numpy = [dense_goal_scores.clone().detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]
         return loss.mean(), dense_goal_scores_numpy, dense_goals_lst
 
     """
@@ -164,7 +175,7 @@ class Decoder(nn.Module):
             goals_2D_hidden_attention_with_lane
         ]
         scores = self.goals_2D_decoder(torch.cat(li, dim=-1)).squeeze(-1)
-        scores = F.softplus(scores)
+        # scores = F.softplus(scores)
 
         return scores
     

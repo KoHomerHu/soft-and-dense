@@ -524,7 +524,7 @@ def get_dense_goal_targets_one_hot(dense_goals: np.ndarray, mapping: List[Dict])
     return dense_goal_targets_one_hot
 
 
-def get_optimal_targets_home_MR(scores, goals, R=3.0, N=6, output_idx=False):
+def get_optimal_targets_home_MR(scores, goals, R=2.0, N=6, output_idx=False, target_energy_idx=None):
     ans_points = np.zeros((N, 2), dtype=np.float32)
     ans_idx = np.zeros(N, dtype=np.int32)
 
@@ -536,6 +536,13 @@ def get_optimal_targets_home_MR(scores, goals, R=3.0, N=6, output_idx=False):
         dist = get_dis_batch(goals, ans_points[0])
         scores[dist < R] = 0.0
         init_id = 1
+
+    if target_energy_idx is not None:
+        ans_idx[init_id] = target_energy_idx
+        ans_points[init_id] = goals[target_energy_idx]
+        dist = get_dis_batch(goals, ans_points[init_id])
+        scores[dist < R] = 0.0
+        init_id += 1
 
     for i in range(init_id, N):
         best_center, best_idx, best_score, filter_idx = None, None, -float('inf'), None
@@ -558,7 +565,7 @@ def get_optimal_targets_home_MR(scores, goals, R=3.0, N=6, output_idx=False):
     return ans_points
 
 
-def get_optimal_targets_home_FDE(scores, goals, centroids, L=4, R=2.0, N=6):
+def get_optimal_targets_home_FDE(scores, goals, centroids, L=0, R=3.0, N=6):
     for _ in range(L):
         # Compute d_i^k the matrix of distance of point x_i to each centroid c_k
         dist = np.zeros([len(goals), N])
@@ -578,34 +585,39 @@ def get_optimal_targets_home_FDE(scores, goals, centroids, L=4, R=2.0, N=6):
 
 
 def get_optimal_targets_home(scores, goals, N=6):
-    centroids = get_optimal_targets_home_MR(np.copy(scores), goals, N=N) # initial centroids with MR optimization
+    centroids = get_optimal_targets_home_MR(np.copy(scores), goals, N=N, output_idx=True) # initial centroids with MR optimization
     ans_points = get_optimal_targets_home_FDE(scores, goals, centroids, N=N) # FDE optimization
     return ans_points
 
 
-def select_goals_by_optimization(scores, goals, mapping, T=20.0, N=6):
-    ans_points = np.zeros([len(scores), N, 2])
+def select_goals_by_optimization(scores, goals, mapping, T=10.0, N=6):
+    ans_points = np.zeros([len(scores), 2*N, 2])
+    filtered_ans_points = np.zeros([len(scores), N, 2])
 
     for i in range(len(scores)):
         probs = np.exp(-scores[i] / T) / sum(np.exp(-scores[i] / T))
-        ans_points[i] = get_optimal_targets_home(probs, goals[i], N=N)
+        ans_points[i], ans_idx = get_optimal_targets_home(probs, goals[i], N=2*N) 
+        filtered_ans_points[i] = ans_points[i][np.argsort(scores[i][ans_idx])][:N]
 
     min_FDE = np.zeros(len(scores))
+    MR_counter = np.zeros(len(scores))
     for i in range(len(scores)):
         min_FDE[i] = np.min(get_dis_batch(ans_points[i], mapping[i]['labels'][-1]))
+        MR_counter[i] = 1.0 if min_FDE[i] > 2.0 else 0.0
 
-    return ans_points, min_FDE
+    return filtered_ans_points, min_FDE, MR_counter.mean()
 
 
-def get_sse_prep_alter(goals, scores, mapping, m=10.0, eps=10.0, R=3.0, N=6, T=20.0):
+def get_sse_prep_alter(goals, scores, mapping, m=10.0, eps=10.0, R=2.0, N=6, T=10.0):
     probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
-    _, ans_idx = get_optimal_targets_home_MR(probs, goals, R=R, N=N, output_idx=True)
 
     ground_truth_goal = mapping['labels'][-1]
     compute_traj = mapping['quadratic_path'] is not None
 
     target_energy_idx = np.argmin(get_dis_batch(goals, ground_truth_goal))
+
+    _, ans_idx = get_optimal_targets_home_MR(probs, goals, R=R, N=N, output_idx=True, target_energy_idx=target_energy_idx)
 
     push_down_idx, push_up_idx = [], []
 
@@ -732,7 +744,7 @@ if __name__ == '__main__':
     else:
         mapping = [argoverse2_get_instance('./data/test/' + arg.dir + '/', future_frame_num=0, current_timestep=50)]
     model = DP(EncoderDecoder(), device_ids=[0])
-    model.load_state_dict(torch.load('./models/model.pt', map_location='cpu'))
+    model.load_state_dict(torch.load('./models/model (3).pt', map_location='cpu'))
 
     sparse_goals = mapping[0]['goals_2D']
     gt_target = mapping[0]['labels'][-1]
@@ -753,16 +765,17 @@ if __name__ == '__main__':
     dense_goals  = dense_goals_lst[0]
 
     # Filter out dense_goals that have large energy
-    idx = np.argsort(scores)
+    idx = np.argsort(scores)[:1000]
     scores = scores[idx]
     dense_goals = dense_goals[idx]
 
     T = 20.0 # temperature parameter
     answers = select_goals_by_optimization([scores,], [dense_goals,], mapping, T)
 
-    answer_points, fde = answers
+    answer_points, fde, MR = answers
 
     print("FDE: ", fde)
+    print("MR: ", MR)
     print("Answer points: ", answer_points)
 
     # Continue with the rest of the code

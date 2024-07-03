@@ -108,12 +108,17 @@ def train_fn(rank, world_size, arg):
             loss, _, _ = model(batch, device=rank)
 
             loss.backward()
-            print('Norm of gradient:', model.module.decoder.goals_2D_decoder.mlp.linear.weight.grad.norm().item())
+            # print('Norm of gradient:', model.module.decoder.goals_2D_decoder.mlp.linear.weight.grad.norm().item())
 
             optimizer.step()
 
             if rank == 0:
-                pbar.set_postfix({'loss': loss.detach().cpu().item()})
+                pbar.set_postfix(
+                    {
+                        'decoder grad norm': model.module.decoder.goals_2D_decoder.mlp.linear.weight.grad.norm().item(), 
+                        'loss': loss.detach().cpu().item()
+                    }
+                )
 
         scheduler.step()
 

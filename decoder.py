@@ -80,7 +80,7 @@ class Decoder(nn.Module):
             dense_goals_lst.append(dense_goals)
 
         sse_prep = self.pool.starmap(
-            utils.get_sse_prep, 
+            utils.get_sse_prep_alter, 
             [
                 (
                     np.copy(dense_goals_lst[i]), 
@@ -93,9 +93,9 @@ class Decoder(nn.Module):
         # compute dense_goal_loss
         if self.training:
             for i in range(batch_size):
-                target_energy_idx, mo_idx = sse_prep[i]
-                loss[i] += utils.square_square_energy_loss_from_prep(
-                    dense_goal_scores_lst[i], target_energy_idx, mo_idx
+                target_energy_idx, push_down_idx, push_up_idx = sse_prep[i]
+                loss[i] += utils.sse_loss_alter_from_prep(
+                    dense_goal_scores_lst[i], target_energy_idx, push_down_idx, push_up_idx
                 )
 
         dense_goal_scores_numpy = [dense_goal_scores.clone().detach().cpu().numpy() for dense_goal_scores in dense_goal_scores_lst]

@@ -25,12 +25,12 @@ class DecoderResCat(nn.Module):
     def __init__(self, hidden_size, in_features, out_features=60):
         super(DecoderResCat, self).__init__()
         self.mlp = MLP(in_features, hidden_size)
-        self.mlp2 = MLP(hidden_size + in_features, (hidden_size + in_features))
+        # self.mlp2 = MLP(hidden_size + in_features, (hidden_size + in_features))
         self.fc = nn.Linear((hidden_size + in_features), out_features)
 
     def forward(self, hidden_states):
         hidden_states = torch.cat([hidden_states, self.mlp(hidden_states)], dim=-1)
-        hidden_states = self.mlp2(hidden_states)
+        # hidden_states = self.mlp2(hidden_states)
         hidden_states = self.fc(hidden_states)
         return hidden_states
 
@@ -76,11 +76,14 @@ class Decoder(nn.Module):
                 inputs, inputs_lengths, hidden_states, 
                 device, loss
             )
-            dense_goal_scores_lst.append(dense_goal_scores)
-            dense_goals_lst.append(dense_goals)
+            # Get top 1000 dense goal scores and dense goals
+            _, idx = torch.topk(-dense_goal_scores, k=min(1000, len(dense_goal_scores)))
+            idx = idx.detach().cpu().numpy()
+            dense_goal_scores_lst.append(dense_goal_scores[idx])
+            dense_goals_lst.append(dense_goals[idx])
 
         sse_prep = self.pool.starmap(
-            utils.get_sse_prep_alter, 
+            utils.get_sse_prep, 
             [
                 (
                     np.copy(dense_goals_lst[i]), 
@@ -94,7 +97,7 @@ class Decoder(nn.Module):
         if self.training:
             for i in range(batch_size):
                 target_energy_idx, push_down_idx, push_up_idx = sse_prep[i]
-                loss[i] += utils.sse_loss_alter_from_prep(
+                loss[i] += utils.sse_loss_from_prep(
                     dense_goal_scores_lst[i], target_energy_idx, push_down_idx, push_up_idx
                 )
 

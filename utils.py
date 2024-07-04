@@ -451,7 +451,7 @@ def get_optimal_targets_home_MR(scores, goals, R=2.0, N=6, output_idx=False):
     return ans_points
 
 
-def get_optimal_targets_home_FDE(scores, goals, centroids, L=4, R=3.0, N=6):
+def get_optimal_targets_home_FDE(scores, goals, centroids, L=0, R=3.0, N=6):
     for _ in range(L):
         # Compute d_i^k the matrix of distance of point x_i to each centroid c_k
         dist = np.zeros([len(goals), N])
@@ -476,7 +476,7 @@ def get_optimal_targets_home(scores, goals, N=6):
     return ans_points, ans_idx
 
 
-def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=1):
+def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=2):
     ans_points = np.zeros([len(scores), M*N, 2])
     filtered_ans_points = np.zeros([len(scores), N, 2])
 
@@ -491,7 +491,7 @@ def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=1):
         min_FDE[i] = np.min(get_dis_batch(ans_points[i], mapping[i]['labels'][-1]))
         MR_counter[i] = 1.0 if min_FDE[i] > 2.0 else 0.0
 
-    return filtered_ans_points, min_FDE, MR_counter.mean()
+    return filtered_ans_points, min_FDE, MR_counter
 
 
 def get_sse_prep(goals, scores, mapping, m=10.0, eps=5.0, R=2.0, N=6, M=1, T=5.0):
@@ -613,7 +613,8 @@ if __name__ == '__main__':
     else:
         mapping = [argoverse2_get_instance('./data/test/' + arg.dir + '/', future_frame_num=0, current_timestep=50)]
     model = DP(EncoderDecoder(), device_ids=[0])
-    model.load_state_dict(torch.load('./models/model.pt', map_location='cpu'))
+    model.eval()
+    model.load_state_dict(torch.load('./models/model (3).pt', map_location='cpu'))
 
     sparse_goals = mapping[0]['goals_2D']
     gt_target = mapping[0]['labels'][-1]

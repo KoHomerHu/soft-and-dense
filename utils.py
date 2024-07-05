@@ -494,7 +494,7 @@ def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=2):
     return filtered_ans_points, min_FDE, MR_counter
 
 
-def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.0, R=2.0, N=6, M=1, T=5.0):
+def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.0, N=6, M=2, T=5.0):
     probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
     ground_truth_goal = mapping['labels'][-1]
@@ -502,8 +502,8 @@ def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.0, R=2.0, N=6, M=1, T=5.0
 
     target_energy_idx = np.argmin(get_dis_batch(goals, ground_truth_goal))
 
-    _, raw_ans_idx = get_optimal_targets_home_MR(probs, goals, R=R, N=int(M*N), output_idx=True)
-    ans_idx = raw_ans_idx[np.argsort(scores[raw_ans_idx])][:N] # over-sample the MR optimization result and select the best N
+    _, raw_ans_idx = get_optimal_targets_home(probs, goals, N=int(M*N)) 
+    ans_idx = raw_ans_idx[np.argsort(scores[raw_ans_idx])][:N] # over-sample the optimization result and select the best N
 
     push_down_idx, push_up_idx = [], []
 
@@ -613,7 +613,7 @@ if __name__ == '__main__':
     else:
         mapping = [argoverse2_get_instance('./data/test/' + arg.dir + '/', future_frame_num=0, current_timestep=50)]
     model = DP(EncoderDecoder(), device_ids=[0])
-    model.eval()
+    # model.eval()
     model.load_state_dict(torch.load('./models/model (3).pt', map_location='cpu'))
 
     sparse_goals = mapping[0]['goals_2D']

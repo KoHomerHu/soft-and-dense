@@ -451,7 +451,7 @@ def get_optimal_targets_home_MR(scores, goals, R=2.0, N=6, output_idx=False):
     return ans_points
 
 
-def get_optimal_targets_home_FDE(scores, goals, centroids, L=0, R=3.0, N=6):
+def get_optimal_targets_home_FDE(scores, goals, centroids, L=3, R=3.0, N=6):
     for _ in range(L):
         # Compute d_i^k the matrix of distance of point x_i to each centroid c_k
         dist = np.zeros([len(goals), N])
@@ -494,7 +494,7 @@ def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=2):
     return filtered_ans_points, min_FDE, MR_counter
 
 
-def get_sse_prep(goals, scores, mapping, m=10.0, eps=5.0, R=2.0, N=6, M=1, T=5.0):
+def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.0, R=2.0, N=6, M=1, T=5.0):
     probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
     ground_truth_goal = mapping['labels'][-1]

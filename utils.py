@@ -471,8 +471,11 @@ def get_optimal_targets_home_FDE(scores, goals, centroids, L=3, R=3.0, N=6):
 
 
 def get_optimal_targets_home(scores, goals, N=6):
-    centroids, ans_idx = get_optimal_targets_home_MR(np.copy(scores), goals, N=N, output_idx=True) # initial centroids with MR optimization
+    centroids = get_optimal_targets_home_MR(np.copy(scores), goals, N=N) # initial centroids with MR optimization
     ans_points = get_optimal_targets_home_FDE(scores, goals, centroids, N=N) # FDE optimization
+    ans_idx = np.zeros(N, dtype=np.int32)
+    for i in range(N):
+        ans_idx[i] = np.argmin(get_dis_batch(goals, ans_points[i]))
     return ans_points, ans_idx
 
 
@@ -488,13 +491,13 @@ def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=2):
     min_FDE = np.zeros(len(scores))
     MR_counter = np.zeros(len(scores))
     for i in range(len(scores)):
-        min_FDE[i] = np.min(get_dis_batch(ans_points[i], mapping[i]['labels'][-1]))
+        min_FDE[i] = np.min(get_dis_batch(filtered_ans_points[i], mapping[i]['labels'][-1]))
         MR_counter[i] = 1.0 if min_FDE[i] > 2.0 else 0.0
 
     return filtered_ans_points, min_FDE, MR_counter
 
 
-def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.0, N=6, M=2, T=5.0):
+def get_sse_prep(goals, scores, mapping, m=6.0, eps=3.0, N=6, M=2, T=5.0):
     probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
     ground_truth_goal = mapping['labels'][-1]
@@ -502,8 +505,8 @@ def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.0, N=6, M=2, T=5.0):
 
     target_energy_idx = np.argmin(get_dis_batch(goals, ground_truth_goal))
 
-    _, raw_ans_idx = get_optimal_targets_home(probs, goals, N=int(M*N)) 
-    ans_idx = raw_ans_idx[np.argsort(scores[raw_ans_idx])][:N] # over-sample the optimization result and select the best N
+    _, ans_idx = get_optimal_targets_home(probs, goals, N=int(M*N)) 
+    # ans_idx = raw_ans_idx[np.argsort(scores[raw_ans_idx])][:N] # over-sample the optimization result and select the best N
 
     push_down_idx, push_up_idx = [], []
 

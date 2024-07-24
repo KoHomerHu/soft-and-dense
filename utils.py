@@ -497,7 +497,7 @@ def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=2):
     return filtered_ans_points, min_FDE, MR_counter
 
 
-def get_sse_prep(goals, scores, mapping, m=6.0, eps=3.0, N=6, M=2, T=5.0):
+def get_sse_prep(goals, scores, mapping, m=10.0, eps=4.0, N=6, M=2, T=5.0):
     probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
     ground_truth_goal = mapping['labels'][-1]
@@ -532,7 +532,7 @@ def sse_loss_from_prep(dense_goal_scores, target_energy_idx, push_down_idx, push
     push_down_loss = torch.mean(dense_goal_scores[push_down_idx] ** 2) if len(push_down_idx) > 0 else 0.0
     push_up_loss = torch.mean((m - dense_goal_scores[push_up_idx]) ** 2) if len(push_up_idx) > 0 else 0.0
 
-    return target_energy_loss + push_down_loss + push_up_loss
+    return target_energy_loss + 0.7 * push_down_loss + push_up_loss
 
 
 def visualize_heatmap(scores, dense_goals, mapping, star_lst=[], pred=None):

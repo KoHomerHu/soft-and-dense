@@ -27,10 +27,13 @@ class DecoderResCat(nn.Module):
         self.mlp = MLP(in_features, hidden_size)
         self.mlp2 = MLP(hidden_size + in_features, hidden_size)
         self.fc = nn.Linear(hidden_size, out_features)
+        self.dropout = nn.Dropout(0.2)
 
     def forward(self, hidden_states):
         hidden_states = torch.cat([hidden_states, self.mlp(hidden_states)], dim=-1)
+        hidden_states = self.dropout(hidden_states)
         hidden_states = self.mlp2(hidden_states)
+        hidden_states = self.dropout(hidden_states)
         hidden_states = self.fc(hidden_states)
         return hidden_states
 

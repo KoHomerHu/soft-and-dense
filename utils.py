@@ -477,7 +477,64 @@ def get_optimal_targets_home(scores, goals, N=6):
     return ans_points, ans_idx
 
 
-def get_optimal_targets_energy(scores, goals, N=6, K=5, num_iters=0, noise_std=3.0, step_size=0.1, num_arms=8):
+def get_optimal_targets_energy(scores, goals, N=6, init_K=5, min_K=0.1):
+    ans_points = np.zeros((N, 2), dtype=np.float32)
+    ans_idx = np.zeros(N, dtype=np.int32)
+    potential_energy = scores.copy()
+
+    min_coord_x, max_coord_x = int(np.min(goals[:, 0]).item()), int(np.max(goals[:, 0]).item())
+    min_coord_y, max_coord_y = int(np.min(goals[:, 1]).item()), int(np.max(goals[:, 1]).item())
+
+    grid = np.zeros(
+        [
+            max_coord_x - min_coord_x + 1, 
+            max_coord_y - min_coord_y + 1
+        ]
+    ) * np.nan
+
+    def visit_grid(goal):
+        return int(goal[0].item()) - min_coord_x, int(goal[1].item()) - min_coord_y
+    
+    for i in range(len(goals)):
+        grid[visit_grid(goals[i])] = i
+
+    def is_dense(point):
+        grid_idx = visit_grid(point)
+
+        cnt = 0
+        for dx, dy in itertools.product(range(-1, 2), range(-1, 2)):
+            if dx == 0 and dy == 0:
+                continue
+            new_grid_idx = grid_idx[0] + dx, grid_idx[1] + dy
+            if new_grid_idx[0] < 0 or new_grid_idx[0] >= grid.shape[0] or new_grid_idx[1] < 0 or new_grid_idx[1] >= grid.shape[1]:
+                continue
+            if not np.isnan(grid[new_grid_idx]):
+                cnt += 1
+            
+        return cnt >= 4
+
+    K = init_K
+
+    i = 0
+    while i < N:
+        ans_idx[i] = np.argmin(potential_energy)
+        ans_points[i] = goals[ans_idx[i]]
+        if i > 0 and K > min_K and not is_dense(ans_points[i]):
+            K = max(K * 0.5, min_K)
+            potential_energy = scores.copy()
+            for j in range(len(potential_energy)):
+                for k in range(i):
+                    dist = get_dis_p2p(ans_points[k], goals[j])
+                    potential_energy[j] += K / (1e-7 + dist)
+            continue
+        for j in range(len(potential_energy)):
+            dist = get_dis_p2p(ans_points[i], goals[j])
+            potential_energy[j] += K / (1e-7 + dist)
+        i += 1
+
+    return ans_points, ans_idx
+    
+    """
     def objective_function(points_idx):
         inv_dists_sum = 0.0
         for i, j in itertools.product(range(N), range(N)):
@@ -485,107 +542,94 @@ def get_optimal_targets_energy(scores, goals, N=6, K=5, num_iters=0, noise_std=3
                 inv_dists_sum += 1 / (1e-7 + get_dis_p2p(goals[points_idx[i]], goals[points_idx[j]]))
         return scores[points_idx].sum() + K * inv_dists_sum / 2
 
-    ans_points = np.zeros((N, 2), dtype=np.float32)
-    ans_idx = np.zeros(N, dtype=np.int32)
-    potential_energy = scores.copy()
+    # initialize the map of goals to visit them by coordinates
+    min_coord_x, max_coord_x = int(np.min(goals[:, 0]).item()), int(np.max(goals[:, 0]).item())
+    min_coord_y, max_coord_y = int(np.min(goals[:, 1]).item()), int(np.max(goals[:, 1]).item())
 
-    for i in range(N):
-        ans_idx[i] = np.argmin(potential_energy)
-        ans_points[i] = goals[ans_idx[i]]
-        for j in range(len(potential_energy)):
-            dist = get_dis_p2p(ans_points[i], goals[j])
-            potential_energy[j] += K / (1e-7 + dist)
+    grid = np.zeros(
+        [
+            max_coord_x - min_coord_x + 1, 
+            max_coord_y - min_coord_y + 1
+        ]
+    ) * np.nan
 
-    if num_iters == 0:
-        return ans_points, ans_idx
-    else:
-        # initialize the map of goals to visit them by coordinates
-        min_coord_x, max_coord_x = int(np.min(goals[:, 0]).item()), int(np.max(goals[:, 0]).item())
-        min_coord_y, max_coord_y = int(np.min(goals[:, 1]).item()), int(np.max(goals[:, 1]).item())
+    def visit_grid(goal):
+        return int(goal[0].item()) - min_coord_x, int(goal[1].item()) - min_coord_y
+    
+    for i in range(len(goals)):
+        grid[visit_grid(goals[i])] = i
 
-        grid = np.zeros(
-            [
-                max_coord_x - min_coord_x + 1, 
-                max_coord_y - min_coord_y + 1
-            ]
-        ) * np.nan
+    # use bandit gradient descent to find the static equilibrium
+    cur_points = ans_points.copy()
+    cur_idx = ans_idx.copy()
 
-        def visit_grid(goal):
-            return int(goal[0].item()) - min_coord_x, int(goal[1].item()) - min_coord_y
+    best_points = ans_points.copy()
+    best_idx = ans_idx.copy()
+    best_value = float('inf')
+
+    for _ in range(num_iters):
+        delta = np.random.normal(0, noise_std, [num_arms, N, 2])
+        new_points_pos = cur_points.astype(int) + delta.astype(int)
+        new_points_neg = cur_points.astype(int) - delta.astype(int)
         
-        for i in range(len(goals)):
-            grid[visit_grid(goals[i])] = i
+        values_pos = np.zeros([num_arms])
+        values_neg = np.zeros([num_arms])
 
-        # use bandit gradient descent to find the static equilibrium
-        cur_points = ans_points.copy()
-        cur_idx = ans_idx.copy()
-
-        best_points = ans_points.copy()
-        best_idx = ans_idx.copy()
-        best_value = float('inf')
-
-        for _ in range(num_iters):
-            delta = np.random.normal(0, noise_std, [num_arms, N, 2])
-            new_points_pos = cur_points.astype(int) + delta.astype(int)
-            new_points_neg = cur_points.astype(int) - delta.astype(int)
-            
-            values_pos = np.zeros([num_arms])
-            values_neg = np.zeros([num_arms])
-
-            # restrict unfeasible points
-            for i in range(num_arms):
-                for j in range(N):
-                    grid_idx_pos = visit_grid(new_points_pos[i][j])
-                    if grid_idx_pos[0] < 0 or grid_idx_pos[0] > grid.shape[0] - 1 or grid_idx_pos[1] < 0 or grid_idx_pos[1] > grid.shape[1] - 1:
-                        new_points_pos[i][j] = cur_points[j]
-                        new_points_neg[i][j] = cur_points[j]
-                        continue
-                    if np.isnan(grid[grid_idx_pos]):
-                        new_points_pos[i][j] = cur_points[j]
-                        new_points_neg[i][j] = cur_points[j]
-                        continue
-                    grid_idx_neg = visit_grid(new_points_neg[i][j])
-                    if grid_idx_neg[0] < 0 or grid_idx_neg[0] > grid.shape[0] - 1 or grid_idx_neg[1] < 0 or grid_idx_neg[1] > grid.shape[1] - 1:
-                        new_points_pos[i][j] = cur_points[j]
-                        new_points_neg[i][j] = cur_points[j]
-                        continue
-                    if np.isnan(grid[grid_idx_neg]):
-                        new_points_neg[i][j] = cur_points[j]
-                        new_points_pos[i][j] = cur_points[j]
-                        continue
-
-                new_points_idx_pos = [int(grid[visit_grid(point)]) for point in new_points_pos[i]]
-                new_points_idx_neg = [int(grid[visit_grid(point)]) for point in new_points_neg[i]]
-
-                # the attempt is to minimize the objective function
-                values_pos[i] = -objective_function(new_points_idx_pos)
-                values_neg[i] = -objective_function(new_points_idx_neg)
-
-            # update the current points
-            new_cur_points = (cur_points + step_size * ((values_pos - values_neg)[:,None,None] * (new_points_pos - cur_points)).mean(axis=0)).astype(int)
-
-            # restrict unfeasible points
+        # restrict unfeasible points
+        for i in range(num_arms):
             for j in range(N):
-                grid_idx = visit_grid(new_cur_points[j])
-                if grid_idx[0] < 0 or grid_idx[0] > grid.shape[0] - 1 or grid_idx[1] < 0 or grid_idx[1] > grid.shape[1] - 1:
-                    new_cur_points[j] = cur_points[j]
+                grid_idx_pos = visit_grid(new_points_pos[i][j])
+                if grid_idx_pos[0] < 0 or grid_idx_pos[0] > grid.shape[0] - 1 or grid_idx_pos[1] < 0 or grid_idx_pos[1] > grid.shape[1] - 1:
+                    new_points_pos[i][j] = cur_points[j]
+                    new_points_neg[i][j] = cur_points[j]
                     continue
-                if np.isnan(grid[grid_idx]):
-                    new_cur_points[j] = cur_points[j]
+                if np.isnan(grid[grid_idx_pos]):
+                    new_points_pos[i][j] = cur_points[j]
+                    new_points_neg[i][j] = cur_points[j]
+                    continue
+                grid_idx_neg = visit_grid(new_points_neg[i][j])
+                if grid_idx_neg[0] < 0 or grid_idx_neg[0] > grid.shape[0] - 1 or grid_idx_neg[1] < 0 or grid_idx_neg[1] > grid.shape[1] - 1:
+                    new_points_pos[i][j] = cur_points[j]
+                    new_points_neg[i][j] = cur_points[j]
+                    continue
+                if np.isnan(grid[grid_idx_neg]):
+                    new_points_neg[i][j] = cur_points[j]
+                    new_points_pos[i][j] = cur_points[j]
                     continue
 
-            cur_points = new_cur_points
-            cur_idx = np.array([int(grid[visit_grid(point)]) for point in cur_points])
-            cur_value = objective_function(cur_idx)
-            print(cur_points)
+            new_points_idx_pos = [int(grid[visit_grid(point)]) for point in new_points_pos[i]]
+            new_points_idx_neg = [int(grid[visit_grid(point)]) for point in new_points_neg[i]]
 
-            if cur_value < best_value:
-                best_value = cur_value
-                best_points = cur_points.copy()
-                best_idx = cur_idx.copy()
-            print(best_value)
+            # the attempt is to minimize the objective function
+            values_pos[i] = -objective_function(new_points_idx_pos)
+            values_neg[i] = -objective_function(new_points_idx_neg)
 
-        return best_points, best_idx
+        # update the current points
+        new_cur_points = (cur_points + step_size * ((values_pos - values_neg)[:,None,None] * (new_points_pos - cur_points)).mean(axis=0)).astype(int)
+
+        # restrict unfeasible points
+        for j in range(N):
+            grid_idx = visit_grid(new_cur_points[j])
+            if grid_idx[0] < 0 or grid_idx[0] > grid.shape[0] - 1 or grid_idx[1] < 0 or grid_idx[1] > grid.shape[1] - 1:
+                new_cur_points[j] = cur_points[j]
+                continue
+            if np.isnan(grid[grid_idx]):
+                new_cur_points[j] = cur_points[j]
+                continue
+
+        cur_points = new_cur_points
+        cur_idx = np.array([int(grid[visit_grid(point)]) for point in cur_points])
+        cur_value = objective_function(cur_idx)
+        print(cur_points)
+
+        if cur_value < best_value:
+            best_value = cur_value
+            best_points = cur_points.copy()
+            best_idx = cur_idx.copy()
+        print(best_value)
+
+    return best_points, best_idx
+    """
 
 
 def select_goals_by_optimization(scores, goals, mapping, N=6):
@@ -603,7 +647,7 @@ def select_goals_by_optimization(scores, goals, mapping, N=6):
     return ans_points, min_FDE, MR_counter
 
 
-def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.5, N=6, M=1, T=1.0):
+def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.5, N=6, M=1):
     # probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
     ground_truth_goal = mapping['labels'][-1]
@@ -624,7 +668,7 @@ def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.5, N=6, M=1, T=1.0):
             traj_dist = get_dis_p2p(goal, point_hat).item()
         else:
             traj_dist = 0.0
-        dist = goal_dist + 2 * traj_dist
+        dist = goal_dist + traj_dist
         if dist >= eps and scores[idx] < m:
             push_up_idx.append(idx)
         elif dist <= eps:
@@ -637,8 +681,9 @@ def sse_loss_from_prep(dense_goal_scores, target_energy_idx, push_down_idx, push
     target_energy_loss = dense_goal_scores[target_energy_idx] ** 2
     push_down_loss = torch.mean(dense_goal_scores[push_down_idx] ** 2) if len(push_down_idx) > 0 else 0.0
     push_up_loss = torch.mean((m - dense_goal_scores[push_up_idx]) ** 2) if len(push_up_idx) > 0 else 0.0
+    alpha = 1.0 if len(push_down_idx) == 0 else 0.5
 
-    return target_energy_loss + 0.7 * push_down_loss + push_up_loss
+    return target_energy_loss + 0.5 * push_down_loss + alpha * push_up_loss
 
 
 def visualize_heatmap(scores, dense_goals, mapping, star_lst=[], pred=None):

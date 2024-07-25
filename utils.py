@@ -1,13 +1,11 @@
 from typing import Dict, List, Tuple
 from scipy.optimize import minimize
 from torch import Tensor
-import torch.multiprocessing as mp
-import torch.nn.functional as F
 import torch
 import math
 import inspect
 import numpy as np
-import random
+import itertools
 
 
 def merge_tensors(tensors: List[torch.Tensor], device, hidden_size=None) -> Tuple[Tensor, List[int]]:
@@ -479,33 +477,141 @@ def get_optimal_targets_home(scores, goals, N=6):
     return ans_points, ans_idx
 
 
-def select_goals_by_optimization(scores, goals, mapping, T=5.0, N=6, M=2):
-    ans_points = np.zeros([len(scores), M*N, 2])
-    filtered_ans_points = np.zeros([len(scores), N, 2])
+def get_optimal_targets_energy(scores, goals, N=6, K=5, num_iters=0, noise_std=3.0, step_size=0.1, num_arms=8):
+    def objective_function(points_idx):
+        inv_dists_sum = 0.0
+        for i, j in itertools.product(range(N), range(N)):
+            if i != j:
+                inv_dists_sum += 1 / (1e-7 + get_dis_p2p(goals[points_idx[i]], goals[points_idx[j]]))
+        return scores[points_idx].sum() + K * inv_dists_sum / 2
+
+    ans_points = np.zeros((N, 2), dtype=np.float32)
+    ans_idx = np.zeros(N, dtype=np.int32)
+    potential_energy = scores.copy()
+
+    for i in range(N):
+        ans_idx[i] = np.argmin(potential_energy)
+        ans_points[i] = goals[ans_idx[i]]
+        for j in range(len(potential_energy)):
+            dist = get_dis_p2p(ans_points[i], goals[j])
+            potential_energy[j] += K / (1e-7 + dist)
+
+    if num_iters == 0:
+        return ans_points, ans_idx
+    else:
+        # initialize the map of goals to visit them by coordinates
+        min_coord_x, max_coord_x = int(np.min(goals[:, 0]).item()), int(np.max(goals[:, 0]).item())
+        min_coord_y, max_coord_y = int(np.min(goals[:, 1]).item()), int(np.max(goals[:, 1]).item())
+
+        grid = np.zeros(
+            [
+                max_coord_x - min_coord_x + 1, 
+                max_coord_y - min_coord_y + 1
+            ]
+        ) * np.nan
+
+        def visit_grid(goal):
+            return int(goal[0].item()) - min_coord_x, int(goal[1].item()) - min_coord_y
+        
+        for i in range(len(goals)):
+            grid[visit_grid(goals[i])] = i
+
+        # use bandit gradient descent to find the static equilibrium
+        cur_points = ans_points.copy()
+        cur_idx = ans_idx.copy()
+
+        best_points = ans_points.copy()
+        best_idx = ans_idx.copy()
+        best_value = float('inf')
+
+        for _ in range(num_iters):
+            delta = np.random.normal(0, noise_std, [num_arms, N, 2])
+            new_points_pos = cur_points.astype(int) + delta.astype(int)
+            new_points_neg = cur_points.astype(int) - delta.astype(int)
+            
+            values_pos = np.zeros([num_arms])
+            values_neg = np.zeros([num_arms])
+
+            # restrict unfeasible points
+            for i in range(num_arms):
+                for j in range(N):
+                    grid_idx_pos = visit_grid(new_points_pos[i][j])
+                    if grid_idx_pos[0] < 0 or grid_idx_pos[0] > grid.shape[0] - 1 or grid_idx_pos[1] < 0 or grid_idx_pos[1] > grid.shape[1] - 1:
+                        new_points_pos[i][j] = cur_points[j]
+                        new_points_neg[i][j] = cur_points[j]
+                        continue
+                    if np.isnan(grid[grid_idx_pos]):
+                        new_points_pos[i][j] = cur_points[j]
+                        new_points_neg[i][j] = cur_points[j]
+                        continue
+                    grid_idx_neg = visit_grid(new_points_neg[i][j])
+                    if grid_idx_neg[0] < 0 or grid_idx_neg[0] > grid.shape[0] - 1 or grid_idx_neg[1] < 0 or grid_idx_neg[1] > grid.shape[1] - 1:
+                        new_points_pos[i][j] = cur_points[j]
+                        new_points_neg[i][j] = cur_points[j]
+                        continue
+                    if np.isnan(grid[grid_idx_neg]):
+                        new_points_neg[i][j] = cur_points[j]
+                        new_points_pos[i][j] = cur_points[j]
+                        continue
+
+                new_points_idx_pos = [int(grid[visit_grid(point)]) for point in new_points_pos[i]]
+                new_points_idx_neg = [int(grid[visit_grid(point)]) for point in new_points_neg[i]]
+
+                # the attempt is to minimize the objective function
+                values_pos[i] = -objective_function(new_points_idx_pos)
+                values_neg[i] = -objective_function(new_points_idx_neg)
+
+            # update the current points
+            new_cur_points = (cur_points + step_size * ((values_pos - values_neg)[:,None,None] * (new_points_pos - cur_points)).mean(axis=0)).astype(int)
+
+            # restrict unfeasible points
+            for j in range(N):
+                grid_idx = visit_grid(new_cur_points[j])
+                if grid_idx[0] < 0 or grid_idx[0] > grid.shape[0] - 1 or grid_idx[1] < 0 or grid_idx[1] > grid.shape[1] - 1:
+                    new_cur_points[j] = cur_points[j]
+                    continue
+                if np.isnan(grid[grid_idx]):
+                    new_cur_points[j] = cur_points[j]
+                    continue
+
+            cur_points = new_cur_points
+            cur_idx = np.array([int(grid[visit_grid(point)]) for point in cur_points])
+            cur_value = objective_function(cur_idx)
+            print(cur_points)
+
+            if cur_value < best_value:
+                best_value = cur_value
+                best_points = cur_points.copy()
+                best_idx = cur_idx.copy()
+            print(best_value)
+
+        return best_points, best_idx
+
+
+def select_goals_by_optimization(scores, goals, mapping, N=6):
+    ans_points = np.zeros([len(scores), N, 2])
 
     for i in range(len(scores)):
-        probs = np.exp(-scores[i] / T) / sum(np.exp(-scores[i] / T))
-        ans_points[i], ans_idx = get_optimal_targets_home(probs, goals[i], N=M*N) 
-        filtered_ans_points[i] = ans_points[i][np.argsort(scores[i][ans_idx])][:N]
+        ans_points[i], _ = get_optimal_targets_energy(scores[i], goals[i], N=N) 
 
     min_FDE = np.zeros(len(scores))
     MR_counter = np.zeros(len(scores))
     for i in range(len(scores)):
-        min_FDE[i] = np.min(get_dis_batch(filtered_ans_points[i], mapping[i]['labels'][-1]))
+        min_FDE[i] = np.min(get_dis_batch(ans_points[i], mapping[i]['labels'][-1]))
         MR_counter[i] = 1.0 if min_FDE[i] > 2.0 else 0.0
 
-    return filtered_ans_points, min_FDE, MR_counter
+    return ans_points, min_FDE, MR_counter
 
 
-def get_sse_prep(goals, scores, mapping, m=10.0, eps=4.0, N=6, M=2, T=5.0):
-    probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
+def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.5, N=6, M=1, T=1.0):
+    # probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
     ground_truth_goal = mapping['labels'][-1]
     compute_traj = mapping['quadratic_path'] is not None
 
     target_energy_idx = np.argmin(get_dis_batch(goals, ground_truth_goal))
 
-    _, ans_idx = get_optimal_targets_home(probs, goals, N=int(M*N)) 
+    _, ans_idx = get_optimal_targets_energy(scores, goals, N=int(M*N)) 
     # ans_idx = raw_ans_idx[np.argsort(scores[raw_ans_idx])][:N] # over-sample the optimization result and select the best N
 
     push_down_idx, push_up_idx = [], []
@@ -518,7 +624,7 @@ def get_sse_prep(goals, scores, mapping, m=10.0, eps=4.0, N=6, M=2, T=5.0):
             traj_dist = get_dis_p2p(goal, point_hat).item()
         else:
             traj_dist = 0.0
-        dist = goal_dist + traj_dist
+        dist = goal_dist + 2 * traj_dist
         if dist >= eps and scores[idx] < m:
             push_up_idx.append(idx)
         elif dist <= eps:
@@ -645,7 +751,7 @@ if __name__ == '__main__':
     scores = scores[idx]
     dense_goals = dense_goals[idx]
 
-    T = 5.0 # temperature parameter
+    T = 1.0 # temperature parameter
     answers = select_goals_by_optimization([scores,], [dense_goals,], mapping, T)
 
     answer_points, fde, MR = answers

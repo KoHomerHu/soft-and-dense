@@ -17,7 +17,7 @@ Inspired by the artificial potential field (APF) approach for path planning, for
 
 Use the following command to train (assuming the preprocessed data is saved in ```temp_train.pkl```):
 
-```python train.py --batch_size 64 --num_epochs 50 --lr0 5e-3 --lrf 1e-4 --num_cpus 24 --distributed_training --load_temp_file --temp_file_path "../data/temp_train.pkl"```
+```python train.py --batch_size 32 --num_epochs 50 --lr0 1e-3 --lrf 1e-4 --distributed_training --load_temp_file --temp_file_path "../data/temp_train.pkl"```
 
 **Remark.** The loss displayed during training generally does not indicate the model performance.
 

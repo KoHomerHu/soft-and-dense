@@ -148,10 +148,10 @@ if __name__ == '__main__':
 
     arg.add_argument('--batch_size', type=int, default=64, help='Batch size of data to train the model.')
     arg.add_argument('--num_iters', type=int, default=100, help='Number of iterations within each epoch to train the model.')
-    arg.add_argument('--num_epochs', type=int, default=42, help='Number of epochs to train the model.')
+    arg.add_argument('--num_epochs', type=int, default=32, help='Number of epochs to train the model.')
     arg.add_argument('--hidden_size', type=int, default=128, help='Size of hidden states encoded by VectorNet.')
-    arg.add_argument('--lr0', type=float, default=1e-3, help='Initial learning rate for AdamW to train the model.')
-    arg.add_argument('--lrf', type=float, default=1e-4, help='Final learning rate for AdamW to train the model.')
+    arg.add_argument('--lr0', type=float, default=1e-2, help='Initial learning rate for optimizer to train the model.')
+    arg.add_argument('--lrf', type=float, default=1e-3, help='Final learning rate for optimizer to train the model.')
     arg.add_argument('--num_gpus', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use for training the model.')
     arg.add_argument('--is_windows', action='store_true', help='Set this flag if the OS is Windows.')
     arg.add_argument('--distributed_training', action='store_true', help='Set this flag to train the model in parallel.')
@@ -160,7 +160,7 @@ if __name__ == '__main__':
     arg.add_argument('--model_save_path', type=str, default='./models/model.pt', help='Path to save the mode(*.pt) file v.')
 
     arg.add_argument('--data_dir', type=str, default='./data/train/', help='Path to the training data.')
-    arg.add_argument('--core_num', type=int, default=4, help='Number of cores to use for preprocessing the data.')
+    arg.add_argument('--core_num', type=int, default=32, help='Number of cores to use for preprocessing the data.')
     arg.add_argument('--load_temp_file', action='store_true', help='Load preprocessed data.')
     arg.add_argument('--temp_file_path', type=str, default="../data/temp_train.pkl", help='Path to the preprocessed data.')
 

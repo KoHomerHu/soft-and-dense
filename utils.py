@@ -477,7 +477,7 @@ def get_optimal_targets_home(scores, goals, N=6):
     return ans_points, ans_idx
 
 
-def get_optimal_targets_energy(scores, goals, N=6, init_K=5, min_K=0.1):
+def get_optimal_targets_energy(scores, goals, N=6, init_K=3, min_K=0.1):
     ans_points = np.zeros((N, 2), dtype=np.float32)
     ans_idx = np.zeros(N, dtype=np.int32)
     potential_energy = scores.copy()
@@ -530,7 +530,26 @@ def get_optimal_targets_energy(scores, goals, N=6, init_K=5, min_K=0.1):
         for j in range(len(potential_energy)):
             dist = get_dis_p2p(ans_points[i], goals[j])
             potential_energy[j] += K / (1e-7 + dist)
-        i += 1
+        i += 1    
+
+    # i = 0
+    # while i < N:
+    #     ans_idx[i] = np.argmin(potential_energy)
+    #     ans_points[i] = goals[ans_idx[i]]
+    #     if i > 0 and K > min_K and not is_dense(ans_points[i]):
+    #         K = max(K * 0.5, min_K)
+    #         potential_energy = scores.copy()
+    #         for j in range(len(potential_energy)):
+    #             min_dist = float('inf')
+    #             for k in range(i):
+    #                 dist = get_dis_p2p(ans_points[k], goals[j])
+    #                 min_dist = min(min_dist, dist)
+    #             potential_energy[j] += K / (1e-7 + min_dist)
+    #         continue
+    #     for j in range(len(potential_energy)):
+    #         dist = get_dis_p2p(ans_points[i], goals[j])
+    #         potential_energy[j] = max(potential_energy[j], scores[j] + K / (1e-7 + dist))
+    #     i += 1
 
     return ans_points, ans_idx
     
@@ -647,7 +666,7 @@ def select_goals_by_optimization(scores, goals, mapping, N=6):
     return ans_points, min_FDE, MR_counter
 
 
-def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.5, N=6, M=1):
+def get_sse_prep(goals, scores, mapping, m=10.0, eps=3.0, N=6, M=1):
     # probs = np.exp(-scores / T) / sum(np.exp(-scores / T)) # obtain softmax score for MR optimization
 
     ground_truth_goal = mapping['labels'][-1]
@@ -808,7 +827,5 @@ if __name__ == '__main__':
     plt.plot(scores)
     plt.show()
     probs = np.exp(-scores / T) / sum(np.exp(-scores / T))
-    plt.plot(probs)
-    plt.show()
 
     visualize_heatmap(probs, dense_goals, mapping[0], pred=answer_points[0])

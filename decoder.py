@@ -190,15 +190,18 @@ class Decoder(nn.Module):
         _, topk_ids = torch.topk(-scores, k=min(k, len(scores))) # energies for top choice of goals are small
         dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=2)
         dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
-        # include the sparse goals
-        # dense_goals = torch.cat(
-        #     [
-        #         torch.tensor(dense_goals, device=device, dtype=torch.float),
-        #         torch.tensor(sparse_goals, device=device, dtype=torch.float)
-        #     ], 
-        #     dim=0
-        # ) 
-        dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
+        
+        if self.training:
+            closest_sparse_goal = sparse_goals[np.argmin(utils.get_dis_batch(sparse_goals, mapping[i]['labels'][-1]))]
+            dense_goals = torch.cat(
+                [
+                    torch.tensor(dense_goals, device=device, dtype=torch.float),
+                    torch.tensor(closest_sparse_goal, device=device, dtype=torch.float).unsqueeze(0)
+                ], 
+                dim=0
+            ) 
+        else:
+            dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
 
         # Compute unnormalized scores for dense goals.
         scores = self.get_scores(dense_goals, *get_scores_inputs)

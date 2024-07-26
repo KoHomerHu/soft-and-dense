@@ -27,13 +27,10 @@ class DecoderResCat(nn.Module):
         self.mlp = MLP(in_features, hidden_size)
         self.mlp2 = MLP(hidden_size + in_features, hidden_size)
         self.fc = nn.Linear(hidden_size, out_features)
-        self.dropout = nn.Dropout(0.2)
 
     def forward(self, hidden_states):
         hidden_states = torch.cat([hidden_states, self.mlp(hidden_states)], dim=-1)
-        hidden_states = self.dropout(hidden_states)
         hidden_states = self.mlp2(hidden_states)
-        hidden_states = self.dropout(hidden_states)
         hidden_states = self.fc(hidden_states)
         return hidden_states
 
@@ -194,13 +191,14 @@ class Decoder(nn.Module):
         dense_goals = utils.get_neighbour_points(sparse_goals[topk_ids.cpu()], topk_ids=topk_ids, mapping=mapping[i], neighbour_dis=2)
         dense_goals = utils.get_points_remove_repeated(dense_goals, decimal=0) # remove repeated points
         # include the sparse goals
-        dense_goals = torch.cat(
-            [
-                torch.tensor(dense_goals, device=device, dtype=torch.float),
-                torch.tensor(sparse_goals, device=device, dtype=torch.float)
-            ], 
-            dim=0
-        ) 
+        # dense_goals = torch.cat(
+        #     [
+        #         torch.tensor(dense_goals, device=device, dtype=torch.float),
+        #         torch.tensor(sparse_goals, device=device, dtype=torch.float)
+        #     ], 
+        #     dim=0
+        # ) 
+        dense_goals = torch.tensor(dense_goals, device=device, dtype=torch.float)
 
         # Compute unnormalized scores for dense goals.
         scores = self.get_scores(dense_goals, *get_scores_inputs)
